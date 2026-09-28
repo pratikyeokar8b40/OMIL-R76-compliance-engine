@@ -11,7 +11,13 @@ One entry point — ``generate_report`` — runs on the finalize transition:
 4. persist the artifacts under ``settings.reports_dir`` and return the row.
 
 Regeneration policy: finalize is the only trigger and sessions transition
-``in_progress → completed`` exactly once, so one report per session holds.
+``in_progress → completed`` exactly once (atomic compare-and-set), and
+``generate_report`` returns the existing row if one is already there, so one
+report per session holds even under concurrent requests.
+
+The QR code encodes ``{verify_base_url}/{report.id}#{content digest}``; the
+report id is allocated BEFORE rendering so the printed QR, the printed
+"Report ID" and ``GET /public/verify/{report_id}`` all agree.
 ``reverify_bytes`` lets the verify endpoint prove a stored file still
 matches its seal.
 """
@@ -19,8 +25,12 @@ matches its seal.
 from __future__ import annotations
 
 import json
+import threading
+import time
 import uuid
 from pathlib import Path
+
+from sqlalchemy import select
 
 from sqlalchemy.orm import Session as OrmSession
 
@@ -62,6 +72,21 @@ def _reports_root() -> Path:
     return root
 
 
+#: Serializes report creation within the process (single-worker deployment):
+#: the existence check and the insert must not interleave.
+_GENERATE_LOCK = threading.Lock()
+
+
+def latest_report_for(db: OrmSession, session_id: uuid.UUID) -> Report | None:
+    """Most recent report row for a session, if any."""
+    return db.scalar(
+        select(Report)
+        .where(Report.session_id == session_id)
+        .order_by(Report.created_at.desc())
+        .limit(1)
+    )
+
+
 def generate_report(
     db: OrmSession,
     session_id: uuid.UUID,
@@ -70,33 +95,42 @@ def generate_report(
 ) -> Report:
     """Render + seal + persist the report for a finalized session.
 
+    Idempotent: if the session already has a report, that row is returned.
+
     Raises ``ValueError`` from ``aggregate_session`` if the session is not
     in a completed/approved state.
     """
-    data = aggregate_session(db, session_id)
-    digest = content_digest(data)
+    with _GENERATE_LOCK:
+        existing = latest_report_for(db, session_id)
+        if existing is not None:
+            return existing
 
-    docx_bytes = render_docx(data, verify_base_url=verify_base_url, sha256=digest, report_id=str(session_id))
-    pdf_bytes = render_pdf(data, verify_base_url=verify_base_url, sha256=digest, report_id=str(session_id))
+        data = aggregate_session(db, session_id)
+        digest = content_digest(data)
+        report_id = uuid.uuid4()
 
-    root = _reports_root()
-    pdf_path = root / f"{session_id}.pdf"
-    docx_path = root / f"{session_id}.docx"
-    pdf_path.write_bytes(pdf_bytes)
-    docx_path.write_bytes(docx_bytes)
+        docx_bytes = render_docx(data, verify_base_url=verify_base_url, sha256=digest, report_id=str(report_id))
+        pdf_bytes = render_pdf(data, verify_base_url=verify_base_url, sha256=digest, report_id=str(report_id))
 
-    report = Report(
-        session_id=session_id,
-        file_path=str(pdf_path),
-        docx_path=str(docx_path),
-        sha256=sha256_hex(pdf_bytes),  # byte-level seal of the delivered file
-        qr_payload=f"{verify_base_url.rstrip('/')}/{session_id}#{digest}",
-        template_version=data.template_version,
-    )
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    return report
+        root = _reports_root()
+        pdf_path = root / f"{session_id}.pdf"
+        docx_path = root / f"{session_id}.docx"
+        pdf_path.write_bytes(pdf_bytes)
+        docx_path.write_bytes(docx_bytes)
+
+        report = Report(
+            id=report_id,
+            session_id=session_id,
+            file_path=str(pdf_path),
+            docx_path=str(docx_path),
+            sha256=sha256_hex(pdf_bytes),  # byte-level seal of the delivered file
+            qr_payload=f"{verify_base_url.rstrip('/')}/{report_id}#{digest}",
+            template_version=data.template_version,
+        )
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+        return report
 
 
 def reverify_bytes(report: Report) -> bool:
@@ -106,6 +140,23 @@ def reverify_bytes(report: Report) -> bool:
     except OSError:
         return False
     return sha256_hex(stored) == report.sha256
+
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 20) -> None:
+    """os.replace, tolerating brief Windows file locks.
+
+    Sync clients (OneDrive) and antivirus scanners briefly open freshly
+    written files; on Windows a replace then fails with PermissionError and
+    officer sign-off returned 503 intermittently.
+    """
+    for attempt in range(attempts):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.1)
 
 
 def regenerate_artifacts(
@@ -120,8 +171,8 @@ def regenerate_artifacts(
     data = aggregate_session(db, report.session_id)
     digest = content_digest(data)
     base = settings.report_verify_base_url
-    docx_bytes = render_docx(data, verify_base_url=base, sha256=digest, report_id=str(report.session_id))
-    pdf_bytes = render_pdf(data, verify_base_url=base, sha256=digest, report_id=str(report.session_id))
+    docx_bytes = render_docx(data, verify_base_url=base, sha256=digest, report_id=str(report.id))
+    pdf_bytes = render_pdf(data, verify_base_url=base, sha256=digest, report_id=str(report.id))
     pdf_path = Path(report.file_path)
     docx_path = Path(report.docx_path) if report.docx_path is not None else None
     pdf_tmp = pdf_path.with_suffix(pdf_path.suffix + ".tmp")
@@ -130,9 +181,9 @@ def regenerate_artifacts(
         pdf_tmp.write_bytes(pdf_bytes)
         if docx_tmp is not None:
             docx_tmp.write_bytes(docx_bytes)
-        pdf_tmp.replace(pdf_path)
+        _replace_with_retry(pdf_tmp, pdf_path)
         if docx_tmp is not None:
-            docx_tmp.replace(docx_path)
+            _replace_with_retry(docx_tmp, docx_path)
     finally:
         for temporary in (pdf_tmp, docx_tmp):
             if temporary is not None:
@@ -141,7 +192,7 @@ def regenerate_artifacts(
                 except FileNotFoundError:
                     pass
     report.sha256 = sha256_hex(pdf_bytes)
-    report.qr_payload = f"{base.rstrip('/')}/{report.session_id}#{digest}"
+    report.qr_payload = f"{base.rstrip('/')}/{report.id}#{digest}"
     if commit:
         db.commit()
         db.refresh(report)

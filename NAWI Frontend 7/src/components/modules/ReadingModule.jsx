@@ -24,7 +24,9 @@ export function ReadingModule({
 }) {
   const [additionalLoad, setAdditionalLoad] = useState('0');
   const [zeroError, setZeroError] = useState('0');
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  // ΔL (changeover extra load) is part of E = I + e/2 - ΔL - L; hiding it
+  // left every reading carrying a +e/2 bias, so it is visible by default.
+  const [showAdvanced, setShowAdvanced] = useState(true);
 
   const [connection, setConnection] = useState({ status: 'idle', message: '' });
   const [lastLine, setLastLine] = useState('');
@@ -113,7 +115,8 @@ export function ReadingModule({
   const readPhoto = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setSource('ocr');
+    // A photo is evidence only: it must not change the provenance of the
+    // readings typed afterwards (OCR reading is deliberately deferred, D-30).
     const isSyncedSession = sessionId && !String(sessionId).startsWith('local-');
     if (!isSyncedSession) {
       setUploadState({ status: 'error', message: 'Sync this session to the server before attaching photos.' });
@@ -136,14 +139,17 @@ export function ReadingModule({
     }
   };
 
-  const handleCapture = () => {
+  const handleCapture = async () => {
     if (!value || Number.isNaN(Number(value))) return;
-    onAdd({
-      applied_load: String(fixedAppliedLoad ?? appliedLoad ?? '0'),
+    const saved = await onAdd({
+      applied_load: String(fixedAppliedLoad ?? appliedLoad ?? ''),
       indication: String(value),
       additional_load: String(additionalLoad || '0'),
       zero_error: String(zeroError || '0'),
     });
+    // ΔL is measured per load, so it must not silently carry over to the
+    // next reading; E0 (zero error of the series) is kept.
+    if (saved !== false) setAdditionalLoad('0');
   };
 
   return (

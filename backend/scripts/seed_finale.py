@@ -76,8 +76,37 @@ def _ensure_instruments(db: SessionLocal, admin_id) -> dict[str, Instrument]:
     return out
 
 
+def _add_if_missing(db, session, tech, test_type, position, seq, load, indication) -> None:
+    """Idempotent add: re-running the seed never trips duplicate checks."""
+    exists = (
+        db.query(Observation)
+        .filter_by(session_id=session.id, test_type=test_type, position=position, sequence_no=seq)
+        .first()
+    )
+    if exists is None:
+        add_observation(
+            db, session, entered_by=tech.id, test_type=test_type,
+            position=position, sequence_no=seq,
+            applied_load=Decimal(load), indication=Decimal(indication),
+            additional_load=Decimal("0"), zero_error=Decimal("0"),
+        )
+
+
 def _story_approved(db: SessionLocal, ds415: Instrument, tech, officer) -> None:
-    """Approved session containing the flagship FAIL row + signed report."""
+    """Approved, signed session containing the flagship FAIL row.
+
+    Builds a COMPLETE evaluation (the finalize gate requires 5 weighing
+    loads, 4 eccentricity positions, 10 repeatability readings, 5 tare
+    steps, creep at 0/5/15/30 min, a zero check, a resolved checklist and
+    start/end temperatures), then finalizes, renders the sealed report and
+    signs it as the demo officer.
+    """
+    from src.core.config import settings
+    from src.engine.checklist_catalog import CHECKLIST_CATALOG
+    from src.report.service import generate_report, regenerate_artifacts
+    from src.services.checklist_service import latest_checklist, submit_checklist_item
+    from src.services.session_service import update_environment
+
     sessions = db.query(TestSession).filter_by(instrument_id=ds415.id).all()
     if any(
         s.status.value == "approved" and s.start_temp_c == _DEMO_APPROVED_START
@@ -85,12 +114,12 @@ def _story_approved(db: SessionLocal, ds415: Instrument, tech, officer) -> None:
     ):
         print("story 1 (approved + FAIL + report): already present")
         return
-    # Reuse a leftover draft if one exists, else create fresh.
+    # Reuse a leftover open session from an interrupted run, else create one.
     session = next(
         (
             s
             for s in sessions
-            if s.status.value == "draft" and s.start_temp_c == _DEMO_APPROVED_START
+            if s.status.value in ("draft", "in_progress") and s.start_temp_c == _DEMO_APPROVED_START
         ),
         None,
     )
@@ -100,31 +129,55 @@ def _story_approved(db: SessionLocal, ds415: Instrument, tech, officer) -> None:
             start_temp_c=_DEMO_APPROVED_START, humidity_pct=Decimal("48"),
             pressure_hpa=Decimal("1012"),
         )
-    add_observation(
-        db, session, entered_by=tech.id, test_type="weighing_performance",
-        position=None, sequence_no=1,
-        applied_load=Decimal("0.1"), indication=Decimal("0.1"),
-        additional_load=Decimal("0"), zero_error=Decimal("0"),
-    )
-    add_observation(
-        db, session, entered_by=tech.id, test_type="weighing_performance",
-        position=None, sequence_no=2,
-        applied_load=Decimal("5.006"), indication=Decimal("5.012"),
-        additional_load=Decimal("0"), zero_error=Decimal("0"),
-    )
-    from src.services.session_service import update_environment
 
-    update_environment(db, session, end_temp_c=Decimal("23.0"))
-    finalize_session(db, session)
-    mark_approved(db, session)
+    if session.status.value == "in_progress":
+        # Weighing performance: Min, 500e, 2000e changeover, Max/2 region, Max.
+        weighing = [("0.1", "0.1"), ("2.5", "2.5"), ("5.006", "5.012"), ("10", "10"), ("15", "15")]
+        for seq, (load, ind) in enumerate(weighing, start=1):
+            _add_if_missing(db, session, tech, "weighing_performance", None, seq, load, ind)
+        for pos in ("1", "2", "3", "4"):
+            _add_if_missing(db, session, tech, "eccentricity", pos, 1, "5", "5")
+        for seq in range(1, 11):
+            _add_if_missing(db, session, tech, "repeatability", None, seq, "7.5", "7.5")
+        for seq, load in enumerate(("0.1", "1", "2.5", "5", "10"), start=1):
+            _add_if_missing(db, session, tech, "tare", None, seq, load, load)
+        for pos in ("1", "2", "3", "4"):
+            _add_if_missing(db, session, tech, "creep", pos, 1, "15", "15")
+        _add_if_missing(db, session, tech, "zero_check", None, 1, "0.05", "0.05")
+
+        open_items = {
+            (r.clause, r.item_key) for r in latest_checklist(db, session.id)
+            if r.outcome.value == "UNCHECKED"
+        }
+        for entry in CHECKLIST_CATALOG:
+            if (entry.clause, entry.item_key) in open_items:
+                submit_checklist_item(
+                    db, session, entered_by=tech.id, clause=entry.clause,
+                    item_key=entry.item_key,
+                    outcome="PASSED" if entry.mandatory else "NA",
+                    remarks=None if entry.mandatory else "Not fitted on this model",
+                )
+        update_environment(db, session, end_temp_c=Decimal("23.0"))
+        finalize_session(db, session)
+
+    report = generate_report(db, session.id, verify_base_url=settings.report_verify_base_url)
+    if report.signed_by is None:
+        from datetime import datetime, timezone
+
+        report.signed_by = officer.id
+        report.signed_at = datetime.now(timezone.utc)
+        mark_approved(db, session, commit=False)
+        regenerate_artifacts(db, report, commit=False)
+        db.commit()
     fail_row = (
         db.query(Observation)
-        .filter_by(session_id=session.id, sequence_no=2)
+        .filter_by(session_id=session.id, test_type="weighing_performance", sequence_no=3)
         .first()
     )
     print(
-        f"story 1 (approved + FAIL + report): session {str(session.id)[:8]}… "
-        f"row2 verdict={fail_row.verdict.value if fail_row else '?'}"
+        f"story 1 (approved + FAIL + report): session {str(session.id)[:8]}... "
+        f"report {str(report.id)[:8]}... flagship row verdict="
+        f"{fail_row.verdict.value if fail_row else '?'}"
     )
 
 
@@ -136,7 +189,7 @@ def _story_live(db: SessionLocal, ds415: Instrument, tech) -> None:
         None,
     )
     if live is not None and db.query(Observation).filter_by(session_id=live.id).count() > 0:
-        print(f"story 2 (live workspace): already present ({str(live.id)[:8]}…)")
+        print(f"story 2 (live workspace): already present ({str(live.id)[:8]}...)")
         return
     if live is None:
         live = create_session(
@@ -152,7 +205,7 @@ def _story_live(db: SessionLocal, ds415: Instrument, tech) -> None:
             applied_load=Decimal("0.1"), indication=Decimal("0.1005"),
             additional_load=Decimal("0"), zero_error=Decimal("0"),
         )
-    print(f"story 2 (live workspace): session {str(live.id)[:8]}… with 1 committed row")
+    print(f"story 2 (live workspace): session {str(live.id)[:8]}... with 1 committed row")
 
 
 def main() -> None:
@@ -170,7 +223,7 @@ def main() -> None:
         _story_approved(db, instruments["EMS-9101-X"], tech, officer)
         _story_live(db, instruments["EMS-9101-X"], tech)
 
-        print(f"finale dataset ready — users: tech@lab.gov.in / officer@lab.gov.in / "
+        print(f"finale dataset ready - users: tech@lab.gov.in / officer@lab.gov.in / "
               f"admin@lab.gov.in ({PASSWORD})")
     finally:
         db.close()

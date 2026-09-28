@@ -24,6 +24,7 @@ from src.api.main import app  # noqa: E402
 from src.db.database import create_all  # noqa: E402
 from src.db.models import Observation  # noqa: E402
 from src.db.database import SessionLocal  # noqa: E402
+from tests._helpers import make_ready  # noqa: E402
 
 create_all()
 
@@ -372,15 +373,39 @@ class TestDriftLevelsUnit:
         assert report["level"] == "red"
 
     def test_mid_delta_is_warn(self) -> None:
+        """Above the 2 degC creep allowance but within the 5 degC steady limit."""
         from decimal import Decimal as D
 
         from src.services.instrument_service import drift_watchdog
 
         report = drift_watchdog(
-            self._instrument(), start_temp_c=D("10"), end_temp_c=D("30")
+            self._instrument(), start_temp_c=D("20"), end_temp_c=D("23.5")
         )
         assert report is not None
         assert report["level"] == "warn"
+
+    def test_unsteady_temperature_is_red(self) -> None:
+        """More than 5 degC change during the tests voids the readings."""
+        from decimal import Decimal as D
+
+        from src.services.instrument_service import drift_watchdog
+
+        report = drift_watchdog(
+            self._instrument(), start_temp_c=D("20"), end_temp_c=D("26")
+        )
+        assert report is not None
+        assert report["level"] == "red"
+
+    def test_small_delta_is_ok(self) -> None:
+        from decimal import Decimal as D
+
+        from src.services.instrument_service import drift_watchdog
+
+        report = drift_watchdog(
+            self._instrument(), start_temp_c=D("22"), end_temp_c=D("23.5")
+        )
+        assert report is not None
+        assert report["level"] == "ok"
 
     def test_outside_static_range_is_red_even_if_delta_small(self) -> None:
         from decimal import Decimal as D
@@ -596,9 +621,25 @@ class TestLifecycle:
         )
         assert obs.status_code == 201
 
+        # One reading is not a complete R 76 evaluation.
+        early = client.post(f"/api/v1/sessions/{sid}/finalize", headers=_auth(tokens["tech"]))
+        assert early.status_code == 409
+        assert "need more readings" in early.json()["detail"]
+
+        make_ready(client, _auth(tokens["tech"]), sid, seq_start=200)
         fin = client.post(f"/api/v1/sessions/{sid}/finalize", headers=_auth(tokens["tech"]))
-        assert fin.status_code == 200
+        assert fin.status_code == 200, fin.text
         assert fin.json()["status"] == "completed"
+
+        # Conditions are sealed once finalized (officer or technician).
+        sealed = client.patch(
+            f"/api/v1/sessions/{sid}", headers=_auth(tokens["tech"]), json={"end_temp_c": "99"}
+        )
+        assert sealed.status_code == 409
+        officer_patch = client.patch(
+            f"/api/v1/sessions/{sid}", headers=_auth(tokens["officer"]), json={"end_temp_c": "22"}
+        )
+        assert officer_patch.status_code == 403
 
         # Closed session refuses new observations.
         closed = client.post(
@@ -999,8 +1040,8 @@ class TestChecklistAPI:
             headers=_auth(tokens["tech"]),
         )
         assert r.status_code == 200, r.text
-        created = r.json()["created"]
-        assert created >= 30  # official sheet has 30+ requirement rows
+        # Session creation already seeds the sheet; explicit seeding is idempotent.
+        assert r.json()["created"] == 0
 
         r = client.get(
             f"/api/v1/sessions/{session_id}/checklist",
@@ -1008,8 +1049,10 @@ class TestChecklistAPI:
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["progress"]["total"] == created
-        assert body["progress"]["open"] == created
+        assert body["progress"]["total"] >= 30  # official sheet has 30+ rows
+        assert body["progress"]["open"] == body["progress"]["total"]
+        mandatory = [i for i in body["items"] if i["mandatory"]]
+        assert mandatory and all(i["clause"] == "7.1.1" for i in mandatory)
         # 7.1.1 mandatory block present:
         clauses = {i["clause"] for i in body["items"]}
         assert "7.1.1" in clauses
@@ -1074,6 +1117,7 @@ class TestChecklistAPI:
         from pypdf import PdfReader
 
         # finalize the shared session
+        make_ready(client, _auth(tokens["tech"]), session_id, seq_start=500)
         r = client.post(
             f"/api/v1/sessions/{session_id}/finalize",
             headers=_auth(tokens["tech"]),

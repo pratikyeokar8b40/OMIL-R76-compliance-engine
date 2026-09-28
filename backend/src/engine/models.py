@@ -48,6 +48,15 @@ __all__ = [
 ]
 
 
+#: Largest magnitude accepted on any metrology field. The database stores
+#: NUMERIC(28, 10), i.e. 18 integer digits; 1e12 leaves ample headroom while
+#: rejecting absurd inputs before they can overflow a column or a quantize.
+MAX_MAGNITUDE = Decimal("1e12")
+
+#: Most decimal places accepted (the storage scale of every metrology column).
+MAX_DECIMAL_PLACES = 10
+
+
 def _numeric_string_to_decimal(value: object) -> object:
     """Before-validator: cast numeric strings to Decimal; ban floats.
 
@@ -59,7 +68,8 @@ def _numeric_string_to_decimal(value: object) -> object:
 
     Raises:
         PrecisionError: If a binary float is supplied.
-        ValueError: If a string is empty or not a valid decimal.
+        ValueError: If a string is empty, not a valid decimal, not finite,
+            out of range, or more precise than the storage scale.
     """
     if isinstance(value, float):
         raise PrecisionError(
@@ -71,9 +81,22 @@ def _numeric_string_to_decimal(value: object) -> object:
         if not cleaned:
             raise ValueError("empty string is not a valid decimal number.")
         try:
-            return Decimal(cleaned)
+            value = Decimal(cleaned)
         except InvalidOperation as exc:
-            raise ValueError(f"not a valid decimal number: {value!r}.") from exc
+            raise ValueError(f"not a valid decimal number: {cleaned!r}.") from exc
+    if isinstance(value, Decimal):
+        # Rejected HERE (not by Field(allow_inf_nan=False)) so the error
+        # payload carries the original string, which is JSON-serializable.
+        if not value.is_finite():
+            raise ValueError("NaN/Infinity is not a physical quantity.")
+        if abs(value) >= MAX_MAGNITUDE:
+            raise ValueError(f"value out of range (must be below {MAX_MAGNITUDE:f}).")
+        if value.as_tuple().exponent < -MAX_DECIMAL_PLACES:  # type: ignore[operator]
+            raise ValueError(
+                f"at most {MAX_DECIMAL_PLACES} decimal places are supported."
+            )
+    elif isinstance(value, int) and not isinstance(value, bool) and abs(value) >= MAX_MAGNITUDE:
+        raise ValueError(f"value out of range (must be below {MAX_MAGNITUDE:f}).")
     return value
 
 

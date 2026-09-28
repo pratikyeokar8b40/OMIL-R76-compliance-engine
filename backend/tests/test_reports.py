@@ -36,6 +36,7 @@ from src.report import (  # noqa: E402
     sha256_hex,
 )
 from src.report.service import regenerate_artifacts  # noqa: E402
+from tests._helpers import make_ready  # noqa: E402
 
 create_all()
 
@@ -112,6 +113,7 @@ def finalized(tokens) -> dict[str, str]:
     )
     assert obs.status_code == 201, obs.text  # flagship FAIL: Ec 0.0085 > MPE 0.005
 
+    make_ready(client, _auth(tokens["tech"]), session_id)
     fin = client.post(f"/api/v1/sessions/{session_id}/finalize", headers=_auth(tokens["tech"]))
     assert fin.status_code == 200, fin.text
 
@@ -230,6 +232,7 @@ class TestVerification:
         )
         assert observation.status_code == 201, observation.text
         assert observation.json()["evaluation"]["verdict"] == "PASS"
+        make_ready(client, _auth(tokens["tech"]), session_id)
         patched = client.patch(
             f"/api/v1/sessions/{session_id}",
             headers=_auth(tokens["tech"]),
@@ -245,7 +248,7 @@ class TestVerification:
         try:
             data = aggregate_session(db, __import__("uuid").UUID(session_id))
             assert data.overall["result"] == "FAIL"
-            assert data.overall["pass_count"] == 1
+            assert data.overall["pass_count"] == data.overall["total"]
             assert data.overall["fail_count"] == 0
             assert "EXCEEDED" in data.overall["drift_note"]
         finally:

@@ -18,6 +18,7 @@ from ..audit_helpers import audit
 from ..deps import AnyUser, DbDep
 from ...db.audit_models import AuditAction
 from ...db.models import TestSession
+from ...engine.checklist_catalog import CHECKLIST_CATALOG
 from ...services import checklist_service
 from ...services.checklist_service import (
     ChecklistConflictError,
@@ -42,6 +43,17 @@ class ChecklistItemOut(BaseModel):
     outcome: str
     remarks: str | None
     revision_no: int
+    #: "Compulsory in all cases" rows (7.1.1) cannot be marked NA.
+    mandatory: bool = False
+
+
+_MANDATORY = {(e.clause, e.item_key) for e in CHECKLIST_CATALOG if e.mandatory}
+
+
+def _item_out(row) -> ChecklistItemOut:
+    out = ChecklistItemOut.model_validate(row)
+    out.mandatory = (row.clause, row.item_key) in _MANDATORY
+    return out
 
 
 class ChecklistOut(BaseModel):
@@ -101,7 +113,7 @@ def read_checklist(session_id: uuid.UUID, db: DbDep, user: AnyUser) -> Checklist
     session = _get(db, session_id)
     items = checklist_service.latest_checklist(db, session.id)
     return ChecklistOut(
-        items=[ChecklistItemOut.model_validate(i) for i in items],
+        items=[_item_out(i) for i in items],
         progress=checklist_service.checklist_progress(items),
     )
 
@@ -143,4 +155,4 @@ def update_item(
                 "item": body.item_key, "outcome": body.outcome},
     )
     db.commit()
-    return ChecklistItemOut.model_validate(row)
+    return _item_out(row)

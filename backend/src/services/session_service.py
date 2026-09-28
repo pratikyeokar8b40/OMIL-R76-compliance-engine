@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db.models import (
@@ -28,9 +29,11 @@ from ..engine import (
     AccuracyClass,
     EngineValueError,
     EvaluationMode,
+    PrecisionError,
     ScaleParameters,
     evaluate,
 )
+from ..engine.models import _numeric_string_to_decimal
 
 
 class SessionStateError(Exception):
@@ -98,7 +101,16 @@ def update_environment(
     humidity_pct: Decimal | None = None,
     pressure_hpa: Decimal | None = None,
 ) -> TestSession:
-    """Patch environmental conditions (never metrology values)."""
+    """Patch environmental conditions (never metrology values).
+
+    Only open sessions accept changes: once finalized, the conditions are
+    part of the sealed report and editing them would silently change it.
+    """
+    if session.status not in (SessionStatus.DRAFT, SessionStatus.IN_PROGRESS):
+        raise SessionStateError(
+            f"session is {session.status.value}; environmental conditions are "
+            "sealed with the report and can no longer change"
+        )
     if end_temp_c is not None:
         session.end_temp_c = end_temp_c
     if humidity_pct is not None:
@@ -261,14 +273,46 @@ def add_observation(
 
 
 def _dec(item: dict[str, Any], key: str) -> Decimal:
-    """Read a metrology quantity from a batch item, rejecting malformed
-    values as ``ValueError`` (per-row rejection) instead of escaping as
-    ``decimal.InvalidOperation`` (which would 500 the whole batch)."""
-    raw = str(item[key])
+    """Read a metrology quantity from a batch item with the SAME rules as the
+    single-observation endpoint (strings/ints only, finite, in range), so a
+    malformed row is rejected per-row instead of crashing the whole batch."""
+    raw = item[key]
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        raise ValueError(
+            f"{key}: send metrology values as decimal strings (got {type(raw).__name__})"
+        )
     try:
-        return Decimal(raw)
-    except InvalidOperation as exc:
-        raise ValueError(f"{key}: not a valid decimal: {raw!r}") from exc
+        value = _numeric_string_to_decimal(raw)
+    except (PrecisionError, ValueError) as exc:
+        raise ValueError(f"{key}: {exc}") from exc
+    if key != "zero_error" and value < 0:
+        raise ValueError(f"{key}: must be >= 0")
+    return value  # type: ignore[return-value]
+
+
+_VALID_POSITIONS = {"1", "2", "3", "4", "5"}
+
+
+def _batch_int(item: dict[str, Any], key: str, default: int | None = None) -> int:
+    raw = item.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise ValueError(f"{key}: must be a whole number")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key}: must be a whole number (got {raw!r})") from exc
+    if value < 0:
+        raise ValueError(f"{key}: must be >= 0")
+    return value
+
+
+def _batch_position(item: dict[str, Any]) -> str | None:
+    raw = item.get("position")
+    if raw is None:
+        return None
+    if not isinstance(raw, (str, int)) or isinstance(raw, bool) or str(raw) not in _VALID_POSITIONS:
+        raise ValueError("position: must be one of '1'..'5' or null")
+    return str(raw)
 
 
 def sync_observation_batch(
@@ -292,12 +336,18 @@ def sync_observation_batch(
     seen: set[tuple[str, str | None, int, int]] = set()
 
     for idx, item in enumerate(items):
-        logical = (
-            str(item.get("test_type")),
-            item.get("position"),
-            int(item.get("sequence_no", 0)),
-            int(item.get("revision_no", 0)),
-        )
+        try:
+            test_type = ObservationTestType(str(item.get("test_type")))
+            position = _batch_position(item)
+            sequence_no = _batch_int(item, "sequence_no")
+            revision_no = _batch_int(item, "revision_no", 0)
+            supersedes_id = _batch_supersedes(
+                db, session, item, test_type, position, sequence_no, revision_no
+            )
+        except (KeyError, ValueError) as exc:
+            rejected.append({"index": str(idx), "reason": str(exc)})
+            continue
+        logical = (test_type.value, position, sequence_no, revision_no)
         if logical in seen:
             rejected.append({"index": str(idx), "reason": "duplicate logical identity in batch"})
             continue
@@ -310,15 +360,11 @@ def sync_observation_batch(
                     db,
                     session,
                     entered_by=entered_by,
-                    test_type=ObservationTestType(str(item["test_type"])),
-                    position=item.get("position"),
-                    sequence_no=int(item["sequence_no"]),
-                    revision_no=int(item.get("revision_no", 0)),
-                    supersedes_id=(
-                        uuid.UUID(str(item["supersedes_id"]))
-                        if item.get("supersedes_id")
-                        else None
-                    ),
+                    test_type=test_type,
+                    position=position,
+                    sequence_no=sequence_no,
+                    revision_no=revision_no,
+                    supersedes_id=supersedes_id,
                     applied_load=_dec(item, "applied_load"),
                     indication=_dec(item, "indication"),
                     additional_load=_dec(item, "additional_load")
@@ -336,8 +382,48 @@ def sync_observation_batch(
             accepted.append(str(row.id))
         except (EngineValueError, KeyError, ValueError, DuplicateObservationError) as exc:
             rejected.append({"index": str(idx), "reason": str(exc)})
+        except IntegrityError:
+            rejected.append({"index": str(idx), "reason": "conflicts with an existing observation"})
     db.commit()
     return {"accepted": accepted, "rejected": rejected}
+
+
+def _batch_supersedes(
+    db: Session,
+    session: TestSession,
+    item: dict[str, Any],
+    test_type: ObservationTestType,
+    position: str | None,
+    sequence_no: int,
+    revision_no: int,
+) -> uuid.UUID | None:
+    """A revision > 0 must supersede a lower revision of the SAME logical
+    observation in the SAME session; revision 0 supersedes nothing."""
+    raw = item.get("supersedes_id")
+    if revision_no == 0:
+        if raw:
+            raise ValueError("supersedes_id: revision 0 cannot supersede another row")
+        return None
+    if not raw:
+        raise ValueError("supersedes_id: required when revision_no > 0")
+    try:
+        target_id = uuid.UUID(str(raw))
+    except ValueError as exc:
+        raise ValueError("supersedes_id: not a valid id") from exc
+    target = db.get(Observation, target_id)
+    if (
+        target is None
+        or target.session_id != session.id
+        or target.test_type != test_type
+        or target.position != position
+        or target.sequence_no != sequence_no
+        or target.revision_no >= revision_no
+    ):
+        raise ValueError(
+            "supersedes_id: must reference a lower revision of the same "
+            "observation in this session"
+        )
+    return target_id
 
 
 def latest_observations(db: Session, session_id: uuid.UUID) -> list[Observation]:
@@ -387,8 +473,12 @@ def finalize_session(db: Session, session: TestSession) -> TestSession:
     from .test_plan_service import completion
     plan = completion(db, session)
     if not plan["ready"]:
-        missing = ", ".join(plan["missing_required"]) or "test plan not initialized"
-        raise SessionStateError(f"evaluation incomplete; required tests without observations: {missing}")
+        if plan["missing_required"]:
+            missing = ", ".join(plan["missing_required"])
+            raise SessionStateError(
+                f"evaluation incomplete; required tests need more readings: {missing}"
+            )
+        raise SessionStateError("evaluation incomplete; no observations have been recorded")
     from .checklist_service import latest_checklist, checklist_progress
     checklist = latest_checklist(db, session.id)
     if not checklist:
@@ -396,10 +486,22 @@ def finalize_session(db: Session, session: TestSession) -> TestSession:
     cp = checklist_progress(checklist)
     if cp["open"] > 0:
         raise SessionStateError(f"evaluation incomplete; checklist has {cp['open']} unchecked item(s)")
-    session.status = SessionStatus.COMPLETED
-    session.completed_at = datetime.now(timezone.utc)
+    if session.start_temp_c is None or session.end_temp_c is None:
+        raise SessionStateError(
+            "evaluation incomplete; record the start and end temperature"
+        )
+    # Atomic compare-and-set: of several concurrent finalize requests (double
+    # clicks), exactly one moves the row; the others get a 409 instead of
+    # each generating a duplicate report.
+    moved = db.execute(
+        update(TestSession)
+        .where(TestSession.id == session.id, TestSession.status == SessionStatus.IN_PROGRESS)
+        .values(status=SessionStatus.COMPLETED, completed_at=datetime.now(timezone.utc))
+    ).rowcount
     db.commit()
     db.refresh(session)
+    if moved != 1:
+        raise SessionStateError("session was already finalized")
     return session
 
 
@@ -418,10 +520,12 @@ def mark_approved(
 
 def _result_dict(row: Observation) -> dict[str, str]:
     """Response payload mirrored from the stored evaluation."""
+    from ..engine.rounding import format_stored
+
     return {
-        "error_prior": str(row.error_prior),
-        "corrected_error": str(row.corrected_error),
-        "mpe_limit": str(row.mpe_limit),
+        "error_prior": format_stored(row.error_prior),
+        "corrected_error": format_stored(row.corrected_error),
+        "mpe_limit": format_stored(row.mpe_limit),
         "verdict": row.verdict.value,
     }
 

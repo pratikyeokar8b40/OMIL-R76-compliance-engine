@@ -4,7 +4,7 @@
 
 **Smart India Hackathon 2026 — Problem Statement PS 26035**
 
-> A deterministic, offline-first Progressive Web App that turns raw weighing-instrument readings into pixel-perfect, cryptographically verifiable OIML R-76-2 pattern evaluation reports — eliminating manual calculation errors and formatting inconsistencies in legal metrology test labs.
+> A deterministic web application that turns weighing-instrument test readings into sealed, verifiable OIML R-76-2 pattern evaluation reports — eliminating manual calculation errors and formatting inconsistencies in legal metrology test labs.
 
 ---
 
@@ -14,13 +14,12 @@
 
 ## 💡 Our Solution
 
-We built a browser-based Metrology Compliance Engine that:
-1. **Ingests** weighing data directly from the instrument through a serial connection or built-in simulator — no manual transcription.
-2. **Computes** e, MPE, and pass/fail status deterministically using codified OIML R-76 formulas — no spreadsheet drift.
-3. **Monitors** ambient lab conditions throughout the test cycle to flag environmental non-compliance.
-4. **Generates** a pixel-perfect PDF report matching the official R-76-2 pattern evaluation format, sealed with a tamper-evident QR code.
-
-All of this runs **offline-first** as a PWA, so labs with unreliable connectivity aren't blocked.
+A browser-based Metrology Compliance Engine that:
+1. **Validates** the instrument against R 76-1 Table 3 before any test starts (class, e, n = Max/e, Min, 1/2/5 × 10ᵏ intervals).
+2. **Guides** the technician through the 17 R 76-2 tests and the sheet-17 checklist, with live error previews.
+3. **Computes** E, Ec, MPE and PASS/FAIL on the server with exact decimal arithmetic, plus the criteria that span several readings (repeatability spread, creep drift).
+4. **Monitors** ambient temperature change over the campaign and voids results when conditions were not steady.
+5. **Generates** a sealed PDF (and editable DOCX) whose QR code opens a public verification page — anyone can check a copy of the PDF against the original.
 
 ---
 
@@ -28,75 +27,80 @@ All of this runs **offline-first** as a PWA, so labs with unreliable connectivit
 
 | Feature | Description |
 |---|---|
-| **Metrology Compliance Engine** | Deterministic calculation of Verification Scale Interval (e) and Maximum Permissible Error (MPE) for Accuracy Classes I, II, III, and IIII per OIML R-76 |
-| **Direct Data Ingestion** | Web Serial API for direct RS-232/USB scale connection, capture-on-stable readings, and a built-in simulator |
-| **Environmental Drift Watchdog** | Continuous logging of temperature, relative humidity, and barometric pressure during the test cycle, with automatic flagging if conditions drift outside permissible bounds |
-| **Interactive Eccentricity Diagram** | 2D interactive weighing-pan diagram to guide and record the eccentricity (corner-loading) test |
-| **Pixel-Perfect PDF Generation** | Output report matches the official OIML R-76-2 pattern evaluation report layout, down to spacing and table structure |
-| **Tamper-Evident QR Verification** | Each report is sealed with a cryptographically hashed QR code encoding the instrument model, pass/fail result, and original report hash — enabling instant authenticity checks |
-| **Offline-First PWA** | IndexedDB local caching means the app works fully offline, syncing when connectivity returns |
+| **Metrology engine** | Deterministic E = I + ½e − ΔL − L, Ec = E − E0, Table 6 MPE bands for Classes I–IIII, initial-verification and in-service (2×) regimes; pure-Python `decimal`, no floats |
+| **Completeness gate** | A report can only be finalized when every required test has its minimum readings (5 weighing loads, 4 eccentricity positions, 10 repeatability, 5 tare, creep at 0/5/15/30 min, zero check), the checklist is resolved and start/end temperatures are recorded — enforced by the server |
+| **Cross-reading criteria** | Repeatability: max(E) − min(E) ≤ MPE (R 76-1 3.6.1). Creep: ≤ 0.5e over 30 min and ≤ 0.2e between 15 and 30 min (3.9.4.1) |
+| **Environmental watchdog** | Start/end temperature change: amber above 2 °C, results void above 5 °C or outside −10…40 °C |
+| **Scale connection** | Web Serial API (Chrome/Edge, 9600 baud) fills the indication from the scale's output; manual entry always available |
+| **Sealed reports** | ReportLab PDF + python-docx twin from one snapshot; SHA-256 of the PDF file plus a content digest embedded in the QR code |
+| **Public verification** | `/verify/<report id>`: result, instrument, signer, seal status, and an in-browser SHA-256 check of any PDF copy — no login needed |
+| **Roles & audit** | Technician / approving officer / admin, JWT auth with login rate limiting, hash-chained audit log with an integrity check in the admin console |
+| **Connection-drop tolerance** | If the server is unreachable mid-session, readings are kept in the browser (IndexedDB) and synced automatically |
 
 ---
 
 ## 🏗️ Tech Stack
 
-- **Frontend:** React 19 + TypeScript + Vite PWA (Tailwind v4, Zustand, Dexie/IndexedDB, service worker)
-- **Backend:** Python FastAPI + SQLAlchemy 2 — PostgreSQL in production, SQLite for dev
-- **Core logic:** pure-Python `decimal` engine (zero floats) + a TypeScript mirror (decimal.js) that runs the *same* golden-vector test file
-- **Reports:** ReportLab (authoritative PDF) + python-docx (editable Word twin), both from one immutable snapshot
-- **Sealing:** SHA-256 file digest + QR content digest; public verification page
-- **Hardware:** Web Serial API (Chrome/Edge, 9600 8N1) with capture-on-stable + built-in simulator
-- **Security:** JWT auth (bcrypt), RBAC, append-only observations, hash-chained audit log
+- **Frontend:** React 19 + Vite 6 + Tailwind CSS v4 (JavaScript/JSX), TanStack Query, wouter, IndexedDB outbox
+- **Backend:** Python FastAPI + SQLAlchemy 2 — SQLite for development, PostgreSQL in the Docker deployment (Alembic migrations)
+- **Engine:** pure-Python `decimal` module (`backend/src/engine/`), golden-vector test file
+- **Reports:** ReportLab (authoritative PDF) + python-docx (editable twin) + qrcode
+- **Security:** JWT (bcrypt), role-based access, append-only observations, hash-chained audit log
 
 ## 🧮 Metrology Engine — Core Logic
 
 ```
-Input:  Accuracy Class (I / II / III / IIII), Max, Min, d
-Derived server-side: e (the verification scale interval) from the instrument contract
-Output: E, Ec, MPE and Pass/Fail per test load — computed server-side at insert
+Input:  Accuracy Class (I / II / III / IIII), Max, Min, e, d
+        per reading: L (applied load), I (indication), ΔL (changeover extra load), E0 (zero error)
 
-1. Validate the instrument against R 76-1 Table 3 (n = Max/e class ranges)
+1. Validate the instrument against R 76-1 Table 3 (n = Max/e class ranges, Min ≥ k·d)
 2. Error prior to rounding:  E  = I + ½·e − ΔL − L          (§A.4.4.3)
-3. Corrected error:          Ec = E − E₀
-4. MPE from the Table-6 band for the class at m = L/e (inclusive upper edge)
-5. Verdict: PASS iff |Ec| ≤ MPE  — stored, never recomputed client-side
+3. Corrected error:          Ec = E − E0
+4. MPE from the Table 6 band for the class at m = L/e (inclusive upper edge)
+5. Verdict: PASS iff |Ec| ≤ MPE  — computed and stored by the server at insert
+6. Session criteria: repeatability spread, creep drift, checklist, ambient conditions
 ```
 
-Full methodology (all four class band tables, worked example, ambient-drift
-rules): [`docs/technical-documentation.md`](docs/technical-documentation.md).
+Full methodology: [`docs/technical-documentation.md`](docs/technical-documentation.md).
 
 ---
 
 ## 🚀 Getting Started
 
-**Backend** (Python 3.12):
+### One click (Windows)
+
+Double-click **`run.bat`**. It creates the Python environment and installs packages on first run, seeds the demo data, starts the backend (port 8000) and frontend (port 5174), and opens the browser. It stops with a clear message if port 8000 or 5174 is already taken.
+
+Sign in as `tech@lab.gov.in`, `officer@lab.gov.in` or `admin@lab.gov.in` — password `demo-password-2026`.
+
+### Manual
+
+**Backend** (Python 3.11+):
 
 ```bash
 cd backend
 python -m venv .venv
-# Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-# Unix-like shells (including Git Bash):
-source .venv/bin/activate
+.\.venv\Scripts\Activate.ps1        # Git Bash: source .venv/Scripts/activate
 pip install -r requirements.txt
-python -m scripts.seed            # demo users (demo-password-2026) + instrument
-python -m uvicorn src.api.main:app --host :: --port 8000
+python -m scripts.seed_finale        # demo users, 3 instruments, a signed report, an open session
+python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+python -m pytest                     # 141 tests
 ```
 
-**Frontend** (Node 22):
+**Frontend** (Node 20+):
 
 ```bash
-cd frontend
+cd "NAWI Frontend 7"
 npm install
-npm run dev           # http://localhost:5173 (proxies /api to :8000)
+npm run dev                          # http://localhost:5174, proxies /api to 127.0.0.1:8000
 ```
 
-Sign in as `tech@lab.gov.in` / `demo-password-2026` (officer and admin
-accounts exist too). For the full finale demo dataset run
-`python -m scripts.seed_finale`.
+If port 8000 is used by something else, run the backend on another port and point the frontend at it:
+`NAWI_API_TARGET=http://127.0.0.1:8010 npm run dev`.
 
-**Docker (production-style):** see [`deploy/README.md`](deploy/README.md) —
-one compose file brings up Postgres + backend + nginx-served PWA.
+**QR codes on a phone:** set `REPORT_VERIFY_BASE_URL=http://<laptop-LAN-IP>:5174/verify` before starting the backend (`run.bat` does this automatically), keep the phone on the same Wi-Fi, and allow Node.js through the Windows Firewall.
+
+**Docker (production-style):** see [`deploy/README.md`](deploy/README.md) — Postgres + backend + nginx-served frontend.
 
 ---
 
@@ -104,39 +108,35 @@ one compose file brings up Postgres + backend + nginx-served PWA.
 
 ```
 OMIL-R76-compliance-engine/
-├── backend/                   # Python FastAPI Backend
+├── backend/
 │   ├── src/
-│   │   ├── engine/            # OIML R-76 math engine (Decimal-only, band tables)
-│   │   ├── services/          # workflow orchestration (sessions, instruments, audit)
-│   │   ├── api/               # FastAPI routers, Pydantic schemas, RBAC, audit glue
-│   │   ├── report/            # aggregate → ReportLab PDF + DOCX twin + QR seal
-│   │   └── db/                # SQLAlchemy models (append-only observations + audit log)
-│   ├── tests/                 # 73 tests incl. golden vectors shared with the frontend
-│   └── scripts/               # seed, seed_finale, smoke scripts, icon generator
-├── frontend/                  # React PWA Frontend
-│   ├── src/
-│   │   ├── engine/            # TS mirror of the Python engine (same golden vectors)
-│   │   ├── hooks/             # useScaleConnection (Web Serial), usePwaInstall
-│   │   ├── components/        # live validation row, eccentricity grid, evidence, panels
-│   │   ├── db/                # IndexedDB offline store + outbox
-│   │   ├── lib/               # requirements.ts (rulebook predicates), serial.ts, sync
-│   │   └── pages/             # Dashboard, Workspace, Reports, Verify, Login
-│   ├── public/                # PWA manifest, service worker, icons
-│   └── tests/                 # mirror conformance + module tests (47)
+│   │   ├── engine/            # R-76 math: Table 3/6 rules, error formulas, session criteria (pure, Decimal-only)
+│   │   ├── services/          # sessions, test plan gate, evaluation summary, instruments, audit
+│   │   ├── api/               # FastAPI routers, schemas, role checks, audit glue
+│   │   ├── report/            # snapshot → PDF + DOCX, seal (SHA-256 + QR)
+│   │   └── db/                # SQLAlchemy models (append-only observations, audit log)
+│   ├── alembic/               # migrations (Docker/PostgreSQL path)
+│   ├── tests/                 # 141 pytest tests incl. golden vectors
+│   └── scripts/               # seed, seed_finale (demo dataset), smoke scripts
+├── NAWI Frontend 7/           # React frontend
+│   └── src/
+│       ├── pages/             # Dashboard, New evaluation, Active session, Reports, Verify, Admin
+│       ├── components/modules # one screen per R-76 test + checklist + verdict
+│       ├── lib/               # test requirements, preview math, offline store + sync, roles
+│       └── api/client.js      # API client (token refresh, downloads, health)
 ├── deploy/                    # docker-compose, Dockerfiles, nginx, runbook
 ├── docs/                      # technical documentation, R 76-2 comparison, PPT/video scripts
-└── README.md
+└── run.bat                    # one-click local start
+```
 
 ---
 
 ## 🎯 What Makes This Different
 
-- **Deterministic, not discretionary** — calculations follow codified OIML formulas, removing human/spreadsheet error.
-- **Hardware-aware** — direct serial ingestion (capture-on-stable) plus a built-in simulator; camera evidence is supported, while OCR display reading remains deliberately deferred.
-- **Verifiable at a glance** — the two-layer seal (file SHA-256 + QR content digest) lets any inspector confirm a report hasn't been altered, via a public page that needs no login.
-- **Built for real lab conditions** — offline-first design and environmental monitoring address practical failure points that purely digital form-fillers ignore.
-
----
+- **Deterministic, not discretionary** — formulas and limits are codified from R 76-1 and enforced by the server, including the rules that compare readings with each other.
+- **Complete by construction** — an evaluation cannot be sealed until every required test has enough readings.
+- **Verifiable by anyone** — scan the QR code, or drop a PDF copy on the verification page to confirm it matches the sealed original byte for byte.
+- **Built for real lab conditions** — unsteady temperatures void results, readings survive connection drops, and the scale can feed indications directly over serial.
 
 ## 👥 Team
 

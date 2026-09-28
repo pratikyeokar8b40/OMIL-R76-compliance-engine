@@ -7,6 +7,7 @@ is loaded if present — ``.env`` is already git-ignored).
 from __future__ import annotations
 
 import os
+import secrets
 from functools import lru_cache
 from pathlib import Path
 
@@ -20,6 +21,9 @@ except ImportError:  # pragma: no cover
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+_DEFAULT_JWT_SECRET = "dev-only-secret-change-me"
 
 
 class Settings(BaseSettings):
@@ -41,7 +45,7 @@ class Settings(BaseSettings):
 
     # --- Auth ------------------------------------------------------------
     jwt_secret_key: str = Field(
-        default="dev-only-secret-change-me",
+        default=_DEFAULT_JWT_SECRET,
         description="MUST be overridden in production via JWT_SECRET_KEY.",
     )
     jwt_algorithm: str = "HS256"
@@ -60,12 +64,9 @@ class Settings(BaseSettings):
     #: production via CORS_ALLOW_ORIGINS='["https://pwa.example.gov.in"]'.
     cors_allow_origins: list[str] = Field(
         default=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://[::1]:5173",
-            "http://localhost:4173",
-            "http://127.0.0.1:4173",
-            "http://[::1]:4173",
+            f"http://{host}:{port}"
+            for port in (5173, 5174, 4173)
+            for host in ("localhost", "127.0.0.1", "[::1]")
         ],
         description="Browser origins allowed to call this API.",
     )
@@ -73,8 +74,10 @@ class Settings(BaseSettings):
     # --- Reports (Phase 5) ------------------------------------------------
     reports_dir: str = Field(default="./reports")
     #: Base URL of the public verification page the QR code points at.
-    #: Dev: Vite serves /verify/:reportId. Production: pin via env.
-    report_verify_base_url: str = Field(default="http://localhost:5173/verify")
+    #: Dev: Vite serves /verify/:reportId on port 5174 (package.json). For a
+    #: phone to open the QR, set REPORT_VERIFY_BASE_URL to the laptop's LAN
+    #: address, e.g. http://192.168.1.20:5174/verify (run.bat does this).
+    report_verify_base_url: str = Field(default="http://localhost:5174/verify")
 
     # --- Drift watchdog (D-14, verified from R 76-1 §3.9.2.3) ------------
     #: Zero-indication drift allowance: 1e per 1 degC (class I),
@@ -85,12 +88,47 @@ class Settings(BaseSettings):
     #: Default static temperature limits when none are marked (§3.9.2.1).
     default_temp_min_c: float = -10.0
     default_temp_max_c: float = 40.0
+    #: Temperature change during the test campaign (start -> end). R 76-1
+    #: Annex A test conditions require a steady temperature: at most 1/5 of
+    #: the temperature range and never more than 5 degC (2 degC for creep).
+    #: Above the red threshold the readings are void; amber flags approach.
+    drift_warn_delta_c: float = 2.0
+    drift_red_delta_c: float = 5.0
+
+
+_JWT_SECRET_FILE = Path(__file__).resolve().parents[2] / ".jwt_secret"
+
+
+def _resolve_jwt_secret(configured: Settings) -> None:
+    """Never sign tokens with the secret that is published in the repo.
+
+    Production refuses to start without JWT_SECRET_KEY. Development generates
+    a random secret once and keeps it in ``backend/.jwt_secret`` (git-ignored)
+    so logins survive restarts.
+    """
+    if configured.jwt_secret_key != _DEFAULT_JWT_SECRET:
+        return
+    if configured.environment == "production":
+        raise RuntimeError("JWT_SECRET_KEY must be set in production.")
+    try:
+        secret = _JWT_SECRET_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        secret = ""
+    if len(secret) < 32:
+        secret = secrets.token_urlsafe(48)
+        try:
+            _JWT_SECRET_FILE.write_text(secret, encoding="utf-8")
+        except OSError:
+            pass  # read-only checkout: secret lives for this process only
+    configured.jwt_secret_key = secret
 
 
 @lru_cache
 def get_settings() -> Settings:
     """Cached settings accessor (FastAPI dependency-friendly)."""
-    return Settings()
+    configured = Settings()
+    _resolve_jwt_secret(configured)
+    return configured
 
 
 settings = get_settings()

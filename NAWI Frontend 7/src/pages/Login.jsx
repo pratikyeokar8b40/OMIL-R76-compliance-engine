@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BarChart3, FileText, LockKeyhole, Mail, ShieldCheck, WifiOff } from 'lucide-react';
+import { BarChart3, FileText, LockKeyhole, Mail, ShieldCheck } from 'lucide-react';
 import machineBg from '@/assets/login-scale.png';
 import { api, setTokens } from '@/api/client';
 import { NawiBrand } from '@/components/NawiBrand';
@@ -15,12 +15,6 @@ export function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-
-  const continueLocally = () => {
-    localStorage.setItem('nawi-authenticated', '1');
-    localStorage.setItem('nawi-local-mode', '1');
-    window.location.href = '/dashboard';
-  };
 
   const continueWithOrganization = async () => {
     setSigningIn(true);
@@ -93,15 +87,11 @@ export function Login() {
               <span className="login-submit-arrow">→</span>
             </button>
 
-            <button type="button" onClick={continueLocally} className="login-local" data-testid="button-local-login">
-              <WifiOff size={19} />
-              Continue in local mode
-            </button>
           </form>
 
           <div className="login-note">
             <LockKeyhole size={18} />
-            <span>Local mode stores working records in this browser. Reports are sealed after their integrity hash is recorded.</span>
+            <span>If the connection drops mid-session, readings are kept in this browser and sync automatically. Reports are sealed when an evaluation is finalized.</span>
           </div>
         </div>
       </section>

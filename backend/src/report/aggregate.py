@@ -94,11 +94,28 @@ class ReportData:
 
 
 def _fmt(value: Decimal | None, places: int = 6) -> str:
-    """Fixed-point 6-decimal string (never scientific notation). ASCII dash
-    for None — the standard PDF fonts are Latin-1 and cannot render '—'."""
+    """Fixed-point string (never scientific notation). ASCII dash for None —
+    the standard PDF fonts are Latin-1 and cannot render '—'."""
     if value is None:
         return "-"
-    return f"{value:.{places}f}"
+    return f"{Decimal(str(value)):.{places}f}"
+
+
+def _fmt_capacity(value: Decimal) -> str:
+    """At least 3 decimals, more only when the value has them (Class I Min)."""
+    whole, _, frac = format(Decimal(str(value)).normalize(), "f").partition(".")
+    return f"{whole}.{frac.ljust(3, '0')}"
+
+
+def _places_for(e: Decimal) -> int:
+    """Decimal places needed to print half of ``e`` exactly (min 6).
+
+    Class I in kg has e = 0.000001, so 0.5e = 0.0000005 needs 7 places; a
+    fixed 6 would print MPE 0.000001 (i.e. 1e) for a 0.5e limit.
+    """
+    exponent = e.normalize().as_tuple().exponent
+    decimals = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    return max(6, decimals + 1)
 
 
 def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
@@ -117,6 +134,7 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
 
     instrument = session.instrument
     e = Decimal(str(instrument.verification_scale_interval))
+    places = _places_for(e)
 
     # --- ambient conditions -------------------------------------------
     mode_label = (
@@ -151,12 +169,12 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
             {
                 "position": obs.position or "-",
                 "seq": str(obs.sequence_no),
-                "L": _fmt(obs.applied_load),
-                "I": _fmt(obs.indication),
-                "dL": _fmt(obs.additional_load),
-                "E": _fmt(obs.error_prior),
-                "Ec": _fmt(obs.corrected_error),
-                "MPE": _fmt(obs.mpe_limit),
+                "L": _fmt(obs.applied_load, places),
+                "I": _fmt(obs.indication, places),
+                "dL": _fmt(obs.additional_load, places),
+                "E": _fmt(obs.error_prior, places),
+                "Ec": _fmt(obs.corrected_error, places),
+                "MPE": _fmt(obs.mpe_limit, places),
                 "MPE_e": f"±{mpe_mult.normalize():f}e",
                 "verdict": obs.verdict.value,
                 "verdict_glyph": "✓ PASS" if obs.verdict.value == "PASS" else "✗ FAIL",
@@ -176,15 +194,20 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
     if drift is not None:
         level = str(drift["level"])
         drift_note = {
-            "ok": f"OK - delta {drift['delta_c']} °C within §3.9.2.3 limits",
-            "warn": f"APPROACHING - delta {drift['delta_c']} °C, monitor room conditions",
+            "ok": f"OK - change of {drift['delta_c']} °C during the tests (steady conditions)",
+            "warn": f"APPROACHING - change of {drift['delta_c']} °C; conditions near the steady-temperature limit",
             "red": (
-                f"EXCEEDED - delta {drift['delta_c']} °C or static range violated; "
-                "affected readings void under §3.9.2 - re-run affected tests"
+                f"EXCEEDED - change of {drift['delta_c']} °C or static range violated; "
+                "readings void - re-run affected tests"
             ),
         }.get(level, level)
+    from ..services.evaluation_summary import evaluation_summary
+
+    summary = evaluation_summary(db, session)
     overall = {
-        "result": "PASS",
+        "result": summary["result"],
+        "checks": summary["checks"],
+        "reasons": summary["reasons"],
         "pass_count": verdict_counts["PASS"],
         "fail_count": verdict_counts["FAIL"],
         "total": verdict_counts["PASS"] + verdict_counts["FAIL"],
@@ -205,8 +228,6 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
     from ..services.checklist_service import checklist_progress, latest_checklist
 
     cl_rows = latest_checklist(db, session_id)
-    if verdict_counts["FAIL"] or any(r.outcome.value == "FAILED" for r in cl_rows) or (drift is not None and drift["level"] == "red"):
-        overall["result"] = "FAIL"
     order_index = {
         (e.clause, e.item_key): i for i, e in enumerate(CHECKLIST_CATALOG)
     }
@@ -243,10 +264,10 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
             "Model": instrument.model,
             "Serial number": instrument.serial_number,
             "Accuracy class": instrument.accuracy_class.value,
-            "Maximum (Max)": _fmt(instrument.max_capacity, 3),
-            "Minimum (Min)": _fmt(instrument.min_capacity, 3),
-            "Scale interval (e)": _fmt(instrument.verification_scale_interval, 6),
-            "Display interval (d)": _fmt(instrument.display_interval, 6),
+            "Maximum (Max)": _fmt_capacity(instrument.max_capacity),
+            "Minimum (Min)": _fmt_capacity(instrument.min_capacity),
+            "Scale interval (e)": _fmt(instrument.verification_scale_interval, places),
+            "Display interval (d)": _fmt(instrument.display_interval, places),
             "Unit": instrument.base_unit,
             "n (Max/e)": _fmt(Decimal(str(instrument.n_max)), 0),
         },

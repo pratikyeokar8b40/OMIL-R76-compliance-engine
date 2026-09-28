@@ -14,8 +14,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root: an unanchored `lib/` also ignored
+# "NAWI Frontend 7/src/lib/" and kept the frontend from building on clones.
+/lib/
+/lib64/
 parts/
 sdist/
 var/

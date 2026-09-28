@@ -45,8 +45,9 @@ export function Reports() {
       try {
         const [repList, sessRes, instRes] = await Promise.all([
           api.reports(),
-          api.sessions(0, 200).catch(() => ({ items: [] })),
-          api.instruments(0, 200).catch(() => ({ items: [] })),
+          // API page size is capped at 100; instruments() takes (query, skip, limit).
+          api.sessions(0, 100).catch(() => ({ items: [] })),
+          api.instruments('', 0, 100).catch(() => ({ items: [] })),
         ]);
 
         const sMap = new Map((sessRes?.items || []).map((s) => [s.id, s]));
@@ -71,11 +72,11 @@ export function Reports() {
       session,
       instrument,
       displayId: report.id ? String(report.id).slice(0, 8) : '—',
-      model: instrument?.model || session?.model || 'NAWI Instrument',
-      manufacturer: instrument?.manufacturer || '—',
-      serial: instrument?.serial_number || session?.serial || '—',
-      mode: session?.evaluation_mode === 'in_service' ? 'In-Service' : 'Initial',
-      status: session?.status || (report.signed_by ? 'approved' : 'completed'),
+      model: report.instrument_model || instrument?.model || session?.model || 'NAWI Instrument',
+      manufacturer: report.instrument_manufacturer || instrument?.manufacturer || '—',
+      serial: report.instrument_serial || instrument?.serial_number || session?.serial || '—',
+      mode: (report.evaluation_mode || session?.evaluation_mode) === 'in_service' ? 'In-Service' : 'Initial',
+      status: report.session_status || session?.status || (report.signed_by ? 'approved' : 'completed'),
     };
   });
 

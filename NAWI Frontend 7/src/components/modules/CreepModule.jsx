@@ -35,10 +35,18 @@ export function CreepModule({
   onStop,
   onReset,
   onCapture,
+  onFastForward,
 }) {
   const capturedFor = (pos) => rows.find((r) => r.position === pos);
-  const dueCheckpoint = CHECKPOINTS.find((c) => !capturedFor(c.position) && elapsedMs / 1000 >= c.seconds);
-  const activeCheckpoint = dueCheckpoint || CHECKPOINTS.find((c) => !capturedFor(c.position)) || CHECKPOINTS[0];
+  const nextCheckpoint = CHECKPOINTS.find((c) => !capturedFor(c.position));
+  const activeCheckpoint = nextCheckpoint || CHECKPOINTS[0];
+  // A checkpoint can only be captured once its time has elapsed on the
+  // timer (the 0-minute reading is taken right after loading).
+  const isDue = Boolean(nextCheckpoint) && elapsedMs / 1000 >= nextCheckpoint.seconds;
+  const waitMs = nextCheckpoint ? Math.max(0, nextCheckpoint.seconds * 1000 - elapsedMs) : 0;
+  const capture = () => {
+    if (isDue) onCapture(activeCheckpoint.position);
+  };
 
   const first = capturedFor('1');
   const last = [...rows].reverse().find(Boolean);
@@ -109,7 +117,7 @@ export function CreepModule({
             <input
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && onCapture(activeCheckpoint.position)}
+              onKeyDown={(e) => e.key === 'Enter' && capture()}
               inputMode="decimal"
               placeholder="0.000"
               className="measure-input mt-2 w-full"
@@ -117,8 +125,9 @@ export function CreepModule({
             />
           </label>
           <button
-            onClick={() => onCapture(activeCheckpoint.position)}
-            disabled={!!capturedFor(activeCheckpoint.position)}
+            onClick={capture}
+            disabled={!isDue}
+            title={isDue ? 'Capture reading' : `Due in ${formatElapsed(waitMs)}`}
             className="button-brass self-end rounded-md px-4 py-3 text-xs font-bold"
             data-testid="button-capture-creep"
           >
@@ -127,7 +136,23 @@ export function CreepModule({
           </button>
         </div>
         <div className="mt-3 flex items-center justify-between text-[10px] text-[#7b9690]">
-          <span>Captures the reading for position {activeCheckpoint.position} ({activeCheckpoint.seconds / 60} min)</span>
+          <span>
+            {!nextCheckpoint
+              ? 'All four checkpoints captured.'
+              : isDue
+              ? `Capture the ${activeCheckpoint.seconds / 60} min reading now (position ${activeCheckpoint.position}).`
+              : `${activeCheckpoint.seconds / 60} min reading due in ${formatElapsed(waitMs)}${running ? '' : ' — start the timer'}.`}
+            {import.meta.env.DEV && nextCheckpoint && !isDue && onFastForward && (
+              <button
+                type="button"
+                onClick={() => onFastForward(nextCheckpoint.seconds * 1000)}
+                className="ml-2 underline"
+                data-testid="button-creep-fast-forward"
+              >
+                Skip wait (dev build only)
+              </button>
+            )}
+          </span>
           <span className="font-mono">source: {source}</span>
         </div>
         {liveValidation && <LiveValidationRow evaluation={liveValidation} unit={unit} />}

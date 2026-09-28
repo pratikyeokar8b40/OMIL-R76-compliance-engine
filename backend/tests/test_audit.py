@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 
 _TMP = tempfile.mkdtemp(prefix="oiml-audit-test-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/audit.db"
@@ -68,7 +69,7 @@ def _make_instrument(token: str) -> str:
         json={
             "manufacturer": "Audit Works",
             "model": "AW-1",
-            "serial_number": "AUD-001",
+            "serial_number": f"AUD-{uuid.uuid4().hex[:8]}",
             "accuracy_class": "III",
             "max_capacity": "15",
             "min_capacity": "0.1",

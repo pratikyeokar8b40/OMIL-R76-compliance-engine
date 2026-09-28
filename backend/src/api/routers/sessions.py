@@ -20,6 +20,7 @@ from ..schemas import (
     BatchSyncRequest,
     BatchSyncResponse,
     DriftReport,
+    EvaluationSummaryOut,
     ObservationCreate,
     ObservationCreatedResponse,
     ObservationOut,
@@ -99,15 +100,20 @@ def read_session(session_id: uuid.UUID, db: DbDep, _user: AnyUser) -> SessionOut
 def patch_session(
     session_id: uuid.UUID, body: SessionPatch, request: Request, db: DbDep, user: AnyUser
 ) -> SessionOut:
-    """Update environmental conditions."""
+    """Update environmental conditions (open sessions, technician/admin)."""
+    if user.role.value == "approving_officer":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "officers may not edit session conditions")
     session = _get_session_or_404(db, session_id)
-    session = session_service.update_environment(
-        db,
-        session,
-        end_temp_c=body.end_temp_c,
-        humidity_pct=body.humidity_pct,
-        pressure_hpa=body.pressure_hpa,
-    )
+    try:
+        session = session_service.update_environment(
+            db,
+            session,
+            end_temp_c=body.end_temp_c,
+            humidity_pct=body.humidity_pct,
+            pressure_hpa=body.pressure_hpa,
+        )
+    except SessionStateError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     audit(
         db, request, user, AuditAction.UPDATE, "session.patch_env",
         object_ref=f"TestSession:{session.id}",
@@ -115,6 +121,18 @@ def patch_session(
             "humidity_pct": str(body.humidity_pct) if body.humidity_pct is not None else None},
     )
     return SessionOut.model_validate(session)
+
+
+@router.get("/{session_id}/summary", response_model=EvaluationSummaryOut)
+def read_summary(session_id: uuid.UUID, db: DbDep, _user: AnyUser) -> EvaluationSummaryOut:
+    """Server-side overall verdict, the reasons for it, and completeness.
+
+    The Verdict screen shows this instead of recomputing a verdict in the
+    browser (rules.md INV-8)."""
+    from ...services.evaluation_summary import evaluation_summary
+
+    session = _get_session_or_404(db, session_id)
+    return EvaluationSummaryOut.model_validate(evaluation_summary(db, session))
 
 
 @router.get("/{session_id}/drift", response_model=DriftReport | None)

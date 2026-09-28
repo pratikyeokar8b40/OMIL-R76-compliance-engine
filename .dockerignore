@@ -1,0 +1,13 @@
+# Build context for deploy/*.Dockerfile is the repo root.
+.git
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+backend/*.db
+backend/*.db-*
+backend/reports
+backend/uploads
+backend/.jwt_secret
+**/.env

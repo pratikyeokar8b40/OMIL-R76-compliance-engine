@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Check, CheckCircle2, Clock, HelpCircle, Loader2, ShieldCheck, XCircle, AlertCircle } from 'lucide-react';
-import { TEST_MODULES } from '@/lib/requirements';
+import { TEST_MODULES, moduleStatus } from '@/lib/requirements';
 import Button from '@/components/Button';
 
 export function TestPlanModule({
@@ -29,8 +29,13 @@ export function TestPlanModule({
 
   const handleSave = async () => {
     if (!selectedType) return;
+    const selectedModule = TEST_MODULES.find((m) => m.testType === selectedType);
     if (statusVal === 'not_applicable' && !rationale.trim()) {
       setValidationError('A rationale is required when a test is marked not applicable.');
+      return;
+    }
+    if (selectedModule?.core && statusVal !== 'required' && !rationale.trim()) {
+      setValidationError('This is a core R-76 test; give a rationale to make it optional or not applicable.');
       return;
     }
     await onUpdateStatus(selectedType, statusVal, rationale.trim() || null);
@@ -38,9 +43,10 @@ export function TestPlanModule({
   };
 
   const requiredCount = testPlanItems.filter((p) => p.status === 'required').length;
-  const completedRequiredCount = testPlanItems.filter(
-    (p) => p.status === 'required' && obsTypes.has(p.test_type)
-  ).length;
+  const completedRequiredCount = testPlanItems.filter((p) => {
+    const module = TEST_MODULES.find((m) => m.testType === p.test_type);
+    return p.status === 'required' && module && moduleStatus(module, observations, p).complete;
+  }).length;
 
   return (
     <div className="animate-rise space-y-7">

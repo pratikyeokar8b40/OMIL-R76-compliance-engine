@@ -1,1 +1,1 @@
-{"name":"NAWI Compliance Suite","short_name":"NAWI","start_url":"/","display":"standalone","background_color":"#edf3ee","theme_color":"#17333c","icons":[{"src":"/images/logo.png","sizes":"192x192","type":"image/png"}]}
+{"name":"NAWI Compliance Suite","short_name":"NAWI","start_url":"/","display":"standalone","background_color":"#edf3ee","theme_color":"#17333c","icons":[{"src":"/images/logo-192.png","sizes":"192x192","type":"image/png"},{"src":"/images/logo.png","sizes":"512x512","type":"image/png"}]}

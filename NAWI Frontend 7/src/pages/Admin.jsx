@@ -55,19 +55,23 @@ export function Admin() {
         <section className="panel p-5">
           <div className="flex items-center justify-between">
             <div className="eyebrow">Hash-Chain Integrity</div>
-            {chain?.valid ? (
+            {chain?.intact ? (
               <ShieldCheck size={18} className="text-[#2e7568]" />
             ) : (
               <ShieldAlert size={18} className="text-[#b24b43]" />
             )}
           </div>
+          {/* GET /users/audit/verify returns { intact, rows, head } or
+              { intact: false, broken_at_id, reason }. */}
           <div className="mt-2 text-xl font-semibold text-[#17333c]">
-            {chain?.valid ? 'Chain verified' : 'Verification Unavailable'}
+            {chain == null ? 'Verification unavailable' : chain.intact ? 'Chain verified' : 'Tampering detected'}
           </div>
           <p className="mt-1 text-xs text-[#58746f]">
-            {chain?.valid
-              ? `${chain.count || rows.length} transitions verified without tampering.`
-              : 'Hash chain verification status could not be confirmed.'}
+            {chain == null
+              ? 'The integrity check could not be reached.'
+              : chain.intact
+              ? `All ${chain.rows} audit entries link correctly; no entry has been altered.`
+              : `Chain breaks at entry #${chain.broken_at_id} (${chain.reason}).`}
           </p>
         </section>
 

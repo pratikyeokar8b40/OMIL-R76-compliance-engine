@@ -17,6 +17,7 @@ import { evaluateObservation } from '@/lib/metrology';
 import { loadWorkingSession, saveWorkingSession, queueOutbox, getSessionMapping } from '@/lib/offlineStore';
 import { TEST_MODULES, moduleStatus, computeTestPlanCompletion } from '@/lib/requirements';
 import { normalizeDrift } from '@/lib/drift';
+import { trimDecimal } from '@/lib/utils';
 import { api } from '@/api/client';
 
 const WORKFLOW_SCREENS = [
@@ -41,7 +42,7 @@ export function ActiveSession() {
 
   const [screenIndex, setScreenIndex] = useState(0);
   const [reading, setReading] = useState('');
-  const [appliedLoad, setAppliedLoad] = useState('5000');
+  const [appliedLoad, setAppliedLoad] = useState('');
   const [observations, setObservations] = useState([]);
   const [source, setSource] = useState('manual');
   const [saved, setSaved] = useState(false);
@@ -60,6 +61,8 @@ export function ActiveSession() {
   const [testPlanData, setTestPlanData] = useState([]);
   const [checklistData, setChecklistData] = useState({ items: [], progress: {} });
   const [seedingChecklist, setSeedingChecklist] = useState(false);
+  const [checklistUpdating, setChecklistUpdating] = useState(null);
+  const [checklistBulk, setChecklistBulk] = useState(false);
 
   // Environment state
   const [envValues, setEnvValues] = useState({
@@ -72,6 +75,8 @@ export function ActiveSession() {
   const [envSaveState, setEnvSaveState] = useState('');
   const [driftInfo, setDriftInfo] = useState(null);
   const [driftLoading, setDriftLoading] = useState(false);
+  // Server's authoritative verdict for the Verdict screen (GET /summary).
+  const [summary, setSummary] = useState(null);
 
   const screens = useMemo(() => {
     const planMap = new Map(testPlanData.map((item) => [item.test_type, item.status]));
@@ -180,6 +185,12 @@ export function ActiveSession() {
     setCreepTimer(next);
     persist({ creepTimer: next });
   };
+  // Dev-build demo aid only (see CreepModule): jump the timer forward.
+  const fastForwardCreepTimer = (targetMs) => {
+    const next = { running: true, startedAt: Date.now(), accumulatedMs: Math.max(targetMs, creepElapsedMs) };
+    setCreepTimer(next);
+    persist({ creepTimer: next });
+  };
   const resetCreepTimer = () => {
     const next = { running: false, startedAt: null, accumulatedMs: 0 };
     setCreepTimer(next);
@@ -188,11 +199,13 @@ export function ActiveSession() {
 
   const evaluateReading = () => {
     if (!reading.trim()) return null;
+    if (!String(appliedLoad).trim()) return null;
     return evaluateObservation({
-      appliedLoad: String(appliedLoad || '0'),
+      appliedLoad: String(appliedLoad),
       indication: String(reading),
       verificationScaleInterval: session.verificationScaleInterval || 1,
       accuracyClass: session.accuracyClass || 'III',
+      evaluationMode: session.evaluation_mode,
     });
   };
 
@@ -202,9 +215,18 @@ export function ActiveSession() {
 
   // Deterministic sequence numbering scoped to (test_type, position)
   const addReading = async (testType, position = null, extraParams = {}) => {
-    const applied = String(extraParams.appliedLoadOverride ?? appliedLoad ?? '0');
-    const ind = String(extraParams.indicationOverride ?? reading ?? '');
-    if (!ind.trim() || Number.isNaN(Number(ind))) return;
+    // Modules pass either camelCase overrides or the API's snake_case names
+    // (ReadingModule sends additional_load / zero_error); accept both so a
+    // typed ΔL or E0 is never silently replaced by 0.
+    const applied = String(extraParams.appliedLoadOverride ?? extraParams.applied_load ?? appliedLoad ?? '');
+    const ind = String(extraParams.indicationOverride ?? extraParams.indication ?? reading ?? '');
+    const additional = extraParams.additionalLoad ?? extraParams.additional_load ?? '0';
+    const zeroErr = extraParams.zeroError ?? extraParams.zero_error ?? '0';
+    if (!ind.trim() || Number.isNaN(Number(ind))) return false;
+    if (!applied.trim() || Number.isNaN(Number(applied))) {
+      setApiError('Enter the applied load before capturing the reading.');
+      return false;
+    }
 
     const matching = observations.filter(
       (o) => o.test_type === testType && (o.position || null) === (position || null)
@@ -219,8 +241,8 @@ export function ActiveSession() {
       sequence_no: sequenceNo,
       applied_load: applied,
       indication: ind,
-      additional_load: String(extraParams.additionalLoad ?? '0'),
-      zero_error: String(extraParams.zeroError ?? '0'),
+      additional_load: String(additional || '0'),
+      zero_error: String(zeroErr || '0'),
       source: extraParams.customSource ?? source ?? 'manual',
     };
 
@@ -267,21 +289,31 @@ export function ActiveSession() {
         }
         setApiError('');
       } catch (err) {
+        if (err.status && err.status < 500) {
+          // The server rejected the reading (e.g. load above Max, duplicate):
+          // show why and do NOT record it locally.
+          setApiError(`Reading not recorded: ${err.message}`);
+          return false;
+        }
         try {
           await queueOutbox({ kind: 'observation', sessionId: session.id, payload });
-          setApiError('Server unreachable — reading queued locally with sequence_no and will sync.');
+          row = { ...row, pending: true };
+          setApiError('Server unreachable — reading saved in this browser and will sync automatically.');
         } catch {
-          setApiError(err.message || 'Server sync failed; observation remains local only.');
+          setApiError(err.message || 'Server sync failed; reading was not saved.');
+          return false;
         }
       }
     } else if (session.id) {
       await queueOutbox({ kind: 'observation', sessionId: session.id, payload });
+      row = { ...row, pending: true };
     }
 
     const next = [...observations, row];
     setObservations(next);
     setReading('');
     persist({ observations: next });
+    return true;
   };
 
   const saveEnvironment = async () => {
@@ -323,6 +355,7 @@ export function ActiveSession() {
   };
 
   const handleUpdateTestPlanStatus = async (testType, status, rationale) => {
+    const previous = (testPlanData || []).find((item) => item.test_type === testType);
     const nextItems = (testPlanData || []).map((item) =>
       item.test_type === testType ? { ...item, status, rationale } : item
     );
@@ -334,7 +367,7 @@ export function ActiveSession() {
         setTestPlanData((items) => items.map((item) => item.test_type === testType ? { ...item, ...(updated || payload) } : item));
         setApiError('');
       } catch (err) {
-        setTestPlanData((items) => items.map((item) => item.test_type === testType ? { ...item, status: 'required' } : item));
+        setTestPlanData((items) => items.map((item) => item.test_type === testType && previous ? { ...previous } : item));
         setApiError(err.message || 'Failed to update test plan on server.');
       }
     } else if (session.id) {
@@ -348,6 +381,9 @@ export function ActiveSession() {
 
   const handleUpdateChecklistItem = async ({ clause, item_key, outcome, remarks }) => {
     if (session.id && !isLocalId(session.id)) {
+      const key = `${clause}:${item_key}`;
+      if (checklistUpdating === key) return;
+      setChecklistUpdating(key);
       try {
         await api.updateChecklistItem(session.id, {
           clause,
@@ -360,6 +396,8 @@ export function ActiveSession() {
         setApiError('');
       } catch (err) {
         setApiError(err.message || 'Failed to record checklist outcome.');
+      } finally {
+        setChecklistUpdating(null);
       }
     } else if (session.id) {
       const updatedItems = (checklistData.items || []).map((i) =>
@@ -371,6 +409,33 @@ export function ActiveSession() {
       } catch (err) {
         setApiError(err.message || 'Unable to queue checklist change.');
       }
+    }
+  };
+
+  // One click for the common case: every remaining item checked and passed.
+  const handleBulkPassChecklist = async () => {
+    if (!session.id || isLocalId(session.id) || checklistBulk) return;
+    const open = (checklistData.items || []).filter((i) => i.outcome === 'UNCHECKED');
+    setChecklistBulk(true);
+    try {
+      for (const item of open) {
+        await api.updateChecklistItem(session.id, {
+          clause: item.clause,
+          item_key: item.item_key,
+          outcome: 'PASSED',
+          remarks: item.remarks || null,
+        });
+      }
+      setApiError('');
+    } catch (err) {
+      setApiError(err.message || 'Failed to record checklist outcomes.');
+    } finally {
+      try {
+        setChecklistData(await api.checklist(session.id));
+      } catch {
+        // keep the last known state
+      }
+      setChecklistBulk(false);
     }
   };
 
@@ -420,6 +485,15 @@ export function ActiveSession() {
       setFinalizing(false);
     }
   };
+
+  useEffect(() => {
+    if (current?.kind !== 'verdict' || !session.id || isLocalId(session.id)) return;
+    let cancelled = false;
+    api.summary(session.id)
+      .then((data) => { if (!cancelled) setSummary(data); })
+      .catch(() => { if (!cancelled) setSummary(null); });
+    return () => { cancelled = true; };
+  }, [current?.kind, session.id, observations.length, checklistData, driftInfo]);
 
   const planMap = useMemo(() => new Map(testPlanData.map((item) => [item.test_type, item])), [testPlanData]);
   const screenComplete = (screen) => {
@@ -484,6 +558,9 @@ export function ActiveSession() {
         <ChecklistModule
           checklist={checklistData}
           onUpdateItem={handleUpdateChecklistItem}
+          onBulkPass={canEdit ? handleBulkPassChecklist : undefined}
+          bulkUpdating={checklistBulk}
+          updatingItem={checklistUpdating}
           onSeed={handleSeedChecklist}
           seeding={seedingChecklist}
         />
@@ -498,6 +575,7 @@ export function ActiveSession() {
           driftInfo={driftInfo}
           testPlanItems={testPlanData}
           checklist={checklistData}
+          summary={summary}
           onFinalize={handleFinalize}
           finalizing={finalizing}
           finalizeError={finalizeError}
@@ -543,6 +621,7 @@ export function ActiveSession() {
           onStart={startCreepTimer}
           onStop={stopCreepTimer}
           onReset={resetCreepTimer}
+          onFastForward={fastForwardCreepTimer}
           onCapture={(position) => addReading('creep', position)}
         />
       );
@@ -638,7 +717,7 @@ export function ActiveSession() {
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[#66837d]">
             <span className="font-mono">SN {session.serial || '—'}</span>
             <span className="h-1 w-1 rounded-full bg-[#9ab0a9]" />
-            <span>{session.capacity || '—'} {session.unit || 'g'} max</span>
+            <span>{trimDecimal(session.capacity) || '—'} {session.unit || 'g'} max</span>
             <span className="h-1 w-1 rounded-full bg-[#9ab0a9]" />
             <span className="rounded bg-[#edf4ef] px-2 py-0.5 text-[10px] font-semibold text-[#2e7568]">
               {session.evaluation_mode === 'in_service' ? 'In-Service' : 'Initial Verification'}

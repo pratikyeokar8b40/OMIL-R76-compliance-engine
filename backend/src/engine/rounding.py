@@ -27,6 +27,7 @@ from .contracts import EngineValueError
 
 __all__ = [
     "INTERNAL_PRECISION",
+    "format_stored",
     "REPORT_DECIMALS",
     "REPORT_QUANTUM",
     "ROUNDING_MODE",
@@ -66,6 +67,20 @@ def format_quantity(value: Decimal) -> str:
         quantized = value.quantize(REPORT_QUANTUM, rounding=ROUNDING_MODE)
     # ``f`` format forces fixed notation even for values with exponents.
     return f"{quantized:f}"
+
+
+def format_stored(value: Decimal) -> str:
+    """Render a STORED quantity for API output without losing precision.
+
+    At least 6 decimal places (the historical API format, e.g. "0.008500"),
+    more only when the value really has them (Class I: "0.0000005"), and
+    never scientific notation (the database can hand back ``0E-10``).
+    """
+    if not value.is_finite():
+        raise EngineValueError("format_stored: NaN/Infinity is not renderable.")
+    text = format(value.normalize(), "f")
+    whole, _, frac = text.partition(".")
+    return f"{whole}.{frac.ljust(REPORT_DECIMALS, '0')}"
 
 
 def quantize_to_d(value: Decimal, d: Decimal | None) -> Decimal:

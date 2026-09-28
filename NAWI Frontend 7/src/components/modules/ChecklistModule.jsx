@@ -17,6 +17,8 @@ export function ChecklistModule({
   checklist = { items: [], progress: {} },
   onUpdateItem,
   onSeed,
+  onBulkPass,
+  bulkUpdating = false,
   seeding = false,
   updatingItem = null,
 }) {
@@ -26,7 +28,9 @@ export function ChecklistModule({
   const [remarkText, setRemarkText] = useState('');
 
   const items = checklist.items || [];
-  const progress = checklist.progress || {
+  // Counted from the items themselves: the API's progress has no N/A count,
+  // which made the progress bar render NaN%.
+  const progress = {
     total: items.length,
     passed: items.filter((i) => i.outcome === 'PASSED').length,
     failed: items.filter((i) => i.outcome === 'FAILED').length,
@@ -149,6 +153,18 @@ export function ChecklistModule({
         </div>
 
         <div className="flex flex-wrap gap-1.5 text-xs">
+          {onBulkPass && progress.open > 0 && (
+            <button
+              type="button"
+              onClick={onBulkPass}
+              disabled={bulkUpdating}
+              className="rounded-md bg-[#2e7568] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+              data-testid="button-checklist-pass-open"
+              title="Record PASSED for every item that is still open"
+            >
+              {bulkUpdating ? 'Recording…' : `Pass all open (${progress.open})`}
+            </button>
+          )}
           {[
             { id: 'all', label: `All (${items.length})` },
             { id: 'open', label: `Open (${progress.open ?? progress.unchecked})` },
@@ -218,43 +234,45 @@ export function ChecklistModule({
                       <div className="inline-flex rounded-md border border-[#c9d9d1] bg-white p-0.5 shadow-sm">
                         <button
                           type="button"
-                          disabled={isUpdating}
+                          disabled={isUpdating || bulkUpdating}
                           onClick={() => handleOutcomeChange(item, 'PASSED')}
                           className={`rounded px-2.5 py-1 text-[11px] font-bold transition ${
                             item.outcome === 'PASSED'
                               ? 'bg-[#2e7568] text-white'
                               : 'text-[#66837d] hover:bg-[#edf4ef] hover:text-[#2e7568]'
                           }`}
-                          data-testid={`btn-pass-${item.clause}`}
+                          data-testid={`btn-pass-${item.clause}-${item.item_key}`}
                         >
                           PASS
                         </button>
                         <button
                           type="button"
-                          disabled={isUpdating}
+                          disabled={isUpdating || bulkUpdating}
                           onClick={() => handleOutcomeChange(item, 'FAILED')}
                           className={`rounded px-2.5 py-1 text-[11px] font-bold transition ${
                             item.outcome === 'FAILED'
                               ? 'bg-[#b24b43] text-white'
                               : 'text-[#66837d] hover:bg-[#fdeceb] hover:text-[#b24b43]'
                           }`}
-                          data-testid={`btn-fail-${item.clause}`}
+                          data-testid={`btn-fail-${item.clause}-${item.item_key}`}
                         >
                           FAIL
                         </button>
+                        {!item.mandatory && (
                         <button
                           type="button"
-                          disabled={isUpdating}
+                          disabled={isUpdating || bulkUpdating}
                           onClick={() => handleOutcomeChange(item, 'NA')}
                           className={`rounded px-2 py-1 text-[11px] font-bold transition ${
                             item.outcome === 'NA'
                               ? 'bg-[#66837d] text-white'
                               : 'text-[#66837d] hover:bg-[#f4f7f3]'
                           }`}
-                          data-testid={`btn-na-${item.clause}`}
+                          data-testid={`btn-na-${item.clause}-${item.item_key}`}
                         >
                           N/A
                         </button>
+                        )}
                       </div>
                     </td>
 

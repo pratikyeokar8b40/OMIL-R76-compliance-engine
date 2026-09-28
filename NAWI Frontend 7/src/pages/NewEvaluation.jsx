@@ -6,6 +6,7 @@ import Button from '@/components/Button';
 import { saveWorkingSession, queueOutbox } from '@/lib/offlineStore';
 import { TEST_MODULES } from '@/lib/requirements';
 import { calculateMinCapacity, convertValue } from '@/lib/metrology';
+import { trimDecimal } from '@/lib/utils';
 import { api } from '@/api/client';
 
 const cleanNumber = (value) => String(value ?? '').replaceAll(',', '').trim();
@@ -61,10 +62,10 @@ export function NewEvaluation() {
     setSerial(instrument.serial_number);
     setAccuracyClass(instrument.accuracy_class);
     setUnit(instrument.base_unit);
-    setCapacity(String(instrument.max_capacity));
-    setMinCapacity(String(instrument.min_capacity));
-    setVerificationScaleInterval(String(instrument.verification_scale_interval));
-    setDisplayInterval(String(instrument.display_interval || instrument.verification_scale_interval));
+    setCapacity(trimDecimal(String(instrument.max_capacity)));
+    setMinCapacity(trimDecimal(String(instrument.min_capacity)));
+    setVerificationScaleInterval(trimDecimal(String(instrument.verification_scale_interval)));
+    setDisplayInterval(trimDecimal(String(instrument.display_interval || instrument.verification_scale_interval)));
   };
 
   const handleUnitChange = (nextUnit) => {
@@ -224,8 +225,10 @@ export function NewEvaluation() {
       await saveWorkingSession(nextSession);
       setLocation('/sessions/active');
     } catch (err) {
-      if (err.status === 422 || err.status === 400 || err.status === 409) {
-        setValidationError(err.message || 'Validation error from server. Please review the values.');
+      if (err.status) {
+        // The server answered (validation, permissions, server error): show
+        // it. Only an unreachable server falls back to an offline session.
+        setValidationError(err.message || 'The server rejected the request. Please review the values.');
         setSubmitting(false);
         return;
       }
@@ -280,8 +283,19 @@ export function NewEvaluation() {
               <input value={instrumentQuery} onChange={(e) => setInstrumentQuery(e.target.value)} placeholder="Search serial number or instrument ID" className="min-w-0 flex-1 rounded-md border border-[#c9d9d1] bg-white px-3 py-2.5 text-sm" data-testid="input-search-instrument" />
               <Button size="sm" variant="quiet" onClick={() => void searchRegistry()}><Search size={14} /> Search</Button>
             </div>
-            {instrumentMatches.length > 0 && <div className="mt-3 space-y-2">{instrumentMatches.map((item) => <button key={item.id} type="button" onClick={() => selectInstrument(item)} className="w-full rounded-md border border-[#c9d9d1] bg-white p-3 text-left text-xs hover:border-[#2e7568]"><strong>{item.manufacturer} {item.model}</strong><span className="mt-1 block font-mono text-[#66837d]">SN {item.serial_number} · Class {item.accuracy_class} · Max {item.max_capacity} {item.base_unit} · Min {item.min_capacity} {item.base_unit}</span></button>)}</div>}
-            {!selectedInstrument && instrumentQuery && !instrumentMatches.length && <div className="mt-3 text-xs text-[#66837d]">No registered instrument found. <button type="button" className="font-semibold text-[#2e7568] underline" onClick={() => setRegisterNew(true)}>Register new instrument</button></div>}
+            {instrumentMatches.length > 0 && <div className="mt-3 space-y-2">{instrumentMatches.map((item) => <button key={item.id} type="button" onClick={() => selectInstrument(item)} className="w-full rounded-md border border-[#c9d9d1] bg-white p-3 text-left text-xs hover:border-[#2e7568]"><strong>{item.manufacturer} {item.model}</strong><span className="mt-1 block font-mono text-[#66837d]">SN {item.serial_number} · Class {item.accuracy_class} · Max {trimDecimal(item.max_capacity)} {item.base_unit} · Min {trimDecimal(item.min_capacity)} {item.base_unit}</span></button>)}</div>}
+            {!selectedInstrument && !registerNew && (
+              <div className="mt-3 text-xs text-[#66837d]">
+                {instrumentQuery && !instrumentMatches.length ? 'No registered instrument found. ' : 'Not registered yet? '}
+                <button type="button" className="font-semibold text-[#2e7568] underline" onClick={() => setRegisterNew(true)} data-testid="button-register-new">Register a new instrument</button>
+              </div>
+            )}
+            {!selectedInstrument && registerNew && (
+              <div className="mt-3 flex items-center justify-between text-xs text-[#2e7568]">
+                <span>A new instrument will be registered from the details below (checked against R 76-1 Table 3).</span>
+                <button type="button" className="underline" onClick={() => setRegisterNew(false)}>Cancel</button>
+              </div>
+            )}
             {selectedInstrument && <div className="mt-3 flex items-center justify-between text-xs text-[#2e7568]"><span>Instrument selected: {selectedInstrument.serial_number}</span><button type="button" className="underline" onClick={() => setSelectedInstrument(null)}>Change</button></div>}
           </div>
 

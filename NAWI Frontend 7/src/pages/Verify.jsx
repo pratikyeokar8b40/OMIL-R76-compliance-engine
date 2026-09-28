@@ -58,6 +58,14 @@ export function Verify({ id }) {
   const [loading, setLoading] = useState(true);
   const [signing, setSigning] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState('');
+  const [fileCheck, setFileCheck] = useState(null);
+
+  const isSignedIn = localStorage.getItem('nawi-authenticated') === '1' && Boolean(currentUser?.role);
+  // The printed QR carries the report's content digest after '#'.
+  const urlDigest = typeof window !== 'undefined' ? window.location.hash.replace(/^#/, '') : '';
+  const notFound = !loading && !verified;
+  const result = verified?.overall_result;
+  const resultColor = result === 'PASS' ? '#2e7568' : result === 'FAIL' ? '#b24b43' : '#7b9690';
 
   const loadVerification = async () => {
     if (!reportId) return;
@@ -65,6 +73,9 @@ export function Verify({ id }) {
     try {
       const data = await api.verify(reportId);
       setVerified(data);
+      // Public payload names the instrument, so anonymous visitors see what
+      // the report covers; signed-in users get the full record below.
+      if (data.instrument) setInstrument(data.instrument);
       setReportHash(data.file_sha256 || 'Not available');
       setMetadata((m) => ({
         ...m,
@@ -125,6 +136,24 @@ export function Verify({ id }) {
     };
   }, [verifyUrl]);
 
+  // Hash a PDF the visitor has in hand and compare it with the sealed file.
+  const checkFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !verified) return;
+    if (!window.crypto?.subtle) {
+      setFileCheck({ status: 'error', name: file.name, detail: 'File checking needs https or localhost in this browser.' });
+      return;
+    }
+    try {
+      const digest = await window.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+      setFileCheck({ status: hex === verified.file_sha256 ? 'match' : 'mismatch', name: file.name, hex });
+    } catch {
+      setFileCheck({ status: 'error', name: file.name, detail: 'The file could not be read.' });
+    }
+  };
+
   const signReport = async () => {
     if (!verified?.session_id) return;
     setSigning(true);
@@ -183,16 +212,20 @@ export function Verify({ id }) {
               <h1 className="page-title">Report {reportId ? String(reportId).slice(0, 16) : '—'}</h1>
               <span
                 className={`stamp inline-flex w-fit items-center gap-2 rounded px-3 py-2 font-mono text-[10px] font-bold ${
-                  verified?.file_intact === false
+                  notFound || verified?.file_intact === false
                     ? '!border-[#b24b43] !text-[#b24b43]'
                     : verified?.file_intact
                     ? '!border-[#2e7568] !text-[#2e7568]'
                     : ''
                 }`}
               >
-                {verified?.file_intact ? (
+                {notFound ? (
                   <>
-                    <Check size={13} /> AUTHENTIC &amp; INTACT
+                    <XCircle size={13} /> NOT A KNOWN REPORT
+                  </>
+                ) : verified?.file_intact ? (
+                  <>
+                    <Check size={13} /> GENUINE RECORD
                   </>
                 ) : verified?.file_intact === false ? (
                   <>
@@ -206,35 +239,50 @@ export function Verify({ id }) {
 
             <div className="panel mt-8 overflow-hidden">
               <div
-                className={`flex items-center gap-4 border-b border-[#d7e0db] px-5 py-5 ${
-                  verified?.file_intact ? 'bg-[#eaf4ef]' : 'bg-[#f4f7f3]'
-                }`}
+                className="flex items-center gap-4 border-b border-[#d7e0db] px-5 py-5"
+                style={{ background: notFound ? '#fff5f3' : result === 'PASS' ? '#eaf4ef' : result === 'FAIL' ? '#fdeeec' : '#f4f7f3' }}
               >
                 <div
-                  className={`grid h-12 w-12 place-items-center rounded-full text-white ${
-                    verified?.file_intact ? 'bg-[#2e7568]' : 'bg-[#7b9690]'
-                  }`}
+                  className="grid h-12 w-12 place-items-center rounded-full text-white"
+                  style={{ background: notFound ? '#b24b43' : resultColor }}
                 >
-                  <CheckCircle2 size={27} />
+                  {notFound || result === 'FAIL' ? <XCircle size={27} /> : <CheckCircle2 size={27} />}
                 </div>
                 <div>
-                  <div className="font-mono text-xl font-bold text-[#17333c]">
-                    {loading ? PENDING : verified?.session_status ? verified.session_status.toUpperCase() : 'SEALED'}
+                  <div className="font-mono text-xl font-bold" style={{ color: notFound ? '#b24b43' : resultColor }}>
+                    {loading
+                      ? PENDING
+                      : notFound
+                      ? 'REPORT NOT FOUND'
+                      : `EVALUATION RESULT: ${result || 'INCOMPLETE'}`}
                   </div>
                   <div className="mt-1 text-xs text-[#58746f]">
                     {loading
                       ? 'Validating cryptographic digest…'
-                      : verified?.file_intact
-                      ? 'Report file matches the SHA-256 seal record exactly.'
-                      : 'Verification status returned by the report service.'}
+                      : notFound
+                      ? 'No sealed report exists with this ID. Do not rely on this document.'
+                      : `Session ${String(verified.session_status || '').toUpperCase()}${verified.signed ? ' and signed by the approving officer' : ', awaiting officer sign-off'}. ${
+                          verified.file_intact ? 'The stored report file matches its SHA-256 seal.' : 'The stored report file does NOT match its seal.'
+                        }`}
                   </div>
+                  {!loading && result === 'FAIL' && (verified?.result_reasons || []).length > 0 && (
+                    <ul className="mt-2 list-disc pl-4 text-xs text-[#a6423b]">
+                      {verified.result_reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                    </ul>
+                  )}
                 </div>
               </div>
 
               <div className="grid gap-x-8 gap-y-6 p-5 sm:grid-cols-2 md:p-7">
                 <VerifyField
-                  label="Instrument Model"
-                  value={loading ? PENDING : instrument?.model || session?.model || 'NAWI Instrument'}
+                  label="Instrument"
+                  value={
+                    loading
+                      ? PENDING
+                      : instrument
+                      ? `${instrument.manufacturer || ''} ${instrument.model || ''} · Class ${instrument.accuracy_class}`.trim()
+                      : '—'
+                  }
                 />
                 <VerifyField
                   label="Serial number"
@@ -269,6 +317,7 @@ export function Verify({ id }) {
                 <Printer size={15} />
                 Print report
               </Button>
+              {isSignedIn && (<>
               <Button
                 variant="quiet"
                 size="sm"
@@ -287,7 +336,40 @@ export function Verify({ id }) {
                 <FileText size={15} />
                 Download DOCX
               </Button>
+              </>)}
             </div>
+
+            {verified && (
+              <div className="panel mt-6 p-5">
+                <div className="eyebrow">Check a copy you were given</div>
+                <p className="mt-2 text-xs leading-5 text-[#66837d]">
+                  Choose the PDF file. Its SHA-256 is computed in this browser (nothing is uploaded) and compared with the sealed original.
+                </p>
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={checkFile}
+                  className="mt-3 block text-xs"
+                  data-testid="input-verify-file"
+                />
+                {fileCheck && (
+                  <div
+                    className="mt-3 rounded-md px-3 py-2 text-xs font-semibold"
+                    style={{
+                      background: fileCheck.status === 'match' ? '#eaf4ef' : '#fdeeec',
+                      color: fileCheck.status === 'match' ? '#2e7568' : '#a6423b',
+                    }}
+                    data-testid="text-verify-file-result"
+                  >
+                    {fileCheck.status === 'match'
+                      ? `${fileCheck.name}: identical to the sealed report.`
+                      : fileCheck.status === 'mismatch'
+                      ? `${fileCheck.name}: does NOT match the sealed report (altered or a different file).`
+                      : `${fileCheck.name}: ${fileCheck.detail}`}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           <aside className="space-y-5">
@@ -316,10 +398,21 @@ export function Verify({ id }) {
                 Authoritative verification confirms the report digest, session identity, officer approval, and stored-file SHA-256 integrity.
               </p>
               <p className="mt-3">
-                Overall result <span className="font-mono font-bold">{verified?.overall_result || 'INCOMPLETE'}</span>
+                Overall result <span className="font-mono font-bold" style={{ color: resultColor }}>{verified?.overall_result || '—'}</span>
               </p>
               <p className="mt-3">
-                SHA-256 Digest <span className="break-all font-mono text-[#33545a]">{reportHash}</span>
+                Content digest (printed on the report){' '}
+                <span className="break-all font-mono text-[#33545a]">{verified?.content_digest || '—'}</span>
+              </p>
+              {urlDigest && verified && (
+                <p className="mt-2 font-semibold" style={{ color: urlDigest === verified.content_digest ? '#2e7568' : '#a6423b' }}>
+                  {urlDigest === verified.content_digest
+                    ? 'QR code digest matches the sealed report.'
+                    : 'QR code digest does NOT match the current seal (older copy or altered QR).'}
+                </p>
+              )}
+              <p className="mt-3">
+                PDF file SHA-256 <span className="break-all font-mono text-[#33545a]">{reportHash}</span>
               </p>
             </div>
           </aside>

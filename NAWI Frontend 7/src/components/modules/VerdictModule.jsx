@@ -21,6 +21,7 @@ export function VerdictModule({
   driftInfo = null,
   testPlanItems = [],
   checklist = { items: [], progress: {} },
+  summary = null,
   onFinalize,
   finalizing = false,
   finalizeError = '',
@@ -47,18 +48,25 @@ export function VerdictModule({
   const hasFailedChecklist = (checklistProgress.failed ?? 0) > 0;
   const hasDriftRed = driftInfo?.level === 'red';
 
-  // Metrological verdict state
-  let overallVerdict = 'INCOMPLETE';
-  let statusDetail = 'Required evaluation steps remain incomplete.';
+  // Local gate state (what is still missing) — used only while the server's
+  // summary is loading or unreachable.
+  let localVerdict = 'INCOMPLETE';
+  if (requiredTestsComplete && checklistComplete && envComplete) {
+    localVerdict = hasFailedObs || hasFailedChecklist || hasDriftRed ? 'FAIL' : 'PASS';
+  }
 
-  if (!requiredTestsComplete || !checklistComplete || !envComplete) {
-    overallVerdict = 'INCOMPLETE';
-  } else if (hasFailedObs || hasFailedChecklist || hasDriftRed) {
-    overallVerdict = 'FAIL';
-    statusDetail = 'One or more observations or checklist clauses failed regulatory limits.';
-  } else {
-    overallVerdict = 'PASS';
-    statusDetail = 'All required tests, environmental drift limits, and checklist items satisfy OIML R-76.';
+  // The verdict shown is the SERVER's (GET /sessions/{id}/summary): it adds
+  // the cross-reading criteria (repeatability spread, creep drift) that a
+  // per-row view cannot see. The local value is labelled as a preview.
+  const authoritative = Boolean(summary);
+  const overallVerdict = summary?.result || localVerdict;
+  const reasons = summary?.reasons || [];
+  const failedChecks = (summary?.checks || []).filter((c) => c.verdict === 'FAIL');
+  let statusDetail = 'Required evaluation steps remain incomplete.';
+  if (overallVerdict === 'FAIL') {
+    statusDetail = reasons.length ? reasons.join(' · ') : 'One or more readings or checklist clauses failed regulatory limits.';
+  } else if (overallVerdict === 'PASS') {
+    statusDetail = 'All required tests, cross-reading criteria, environmental conditions and checklist items satisfy OIML R-76.';
   }
 
   const isFinalized = session.status === 'completed' || session.status === 'approved';
@@ -87,19 +95,30 @@ export function VerdictModule({
               )}
             </div>
             <div>
-              <div className="eyebrow">Authoritative Evaluation State</div>
+              <div className="eyebrow">{authoritative ? 'Server evaluation result' : 'Preview (server result unavailable)'}</div>
               <h3 className="mt-1 text-2xl font-bold tracking-tight text-[#17333c]">{overallVerdict}</h3>
             </div>
           </div>
 
           <p className="mt-4 max-w-xl text-sm leading-6 text-[#58746f]">{statusDetail}</p>
+          {failedChecks.length > 0 && (
+            <ul className="mt-3 max-w-xl space-y-1 text-xs text-[#a6423b]">
+              {failedChecks.map((c) => (
+                <li key={c.key}>
+                  <span className="font-semibold">{c.title}</span> ({c.clause}): {c.detail}
+                </li>
+              ))}
+            </ul>
+          )}
 
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
             <div className="rounded-lg bg-[#edf4ef] p-4 border border-[#d7e0db]">
               <div className="text-[10px] uppercase font-bold text-[#7b9690]">Observations</div>
-              <div className="mt-2 font-mono text-xl font-bold text-[#17333c]">{observations.length}</div>
+              <div className="mt-2 font-mono text-xl font-bold text-[#17333c]">{summary?.counts?.total ?? observations.length}</div>
               <div className="mt-1 text-[11px] text-[#2e7568]">
-                {failedObs.length === 0 ? 'All within MPE' : `${failedObs.length} exceeded MPE`}
+                {(summary?.counts?.fail ?? failedObs.length) === 0
+                  ? 'All within MPE'
+                  : `${summary?.counts?.fail ?? failedObs.length} exceeded MPE`}
               </div>
             </div>
 
@@ -240,7 +259,7 @@ export function VerdictModule({
           </div>
           <Button
             onClick={onFinalize}
-            disabled={finalizing || isFinalized || !canFinalize || overallVerdict === 'INCOMPLETE'}
+            disabled={finalizing || isFinalized || !canFinalize || overallVerdict === 'INCOMPLETE' || localVerdict === 'INCOMPLETE'}
             data-testid="button-finalize-session"
           >
             {finalizing ? (
@@ -251,7 +270,7 @@ export function VerdictModule({
               'Session Finalized'
             ) : !canFinalize ? (
               'Approving officers cannot finalize evaluations'
-            ) : overallVerdict === 'INCOMPLETE' ? (
+            ) : overallVerdict === 'INCOMPLETE' || localVerdict === 'INCOMPLETE' ? (
               'Complete required checks before finalizing'
             ) : (
               <>

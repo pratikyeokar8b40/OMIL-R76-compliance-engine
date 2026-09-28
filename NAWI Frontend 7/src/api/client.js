@@ -1,3 +1,5 @@
+import { clearWorkingSession } from '@/lib/offlineStore';
+
 // Backend API client — aligned with OIML R-76 FastAPI backend contracts.
 // All metrology values travel as decimal STRINGS, never binary floats.
 const BASE = import.meta.env.VITE_API_URL || '/api/v1';
@@ -26,26 +28,53 @@ function formatErrorMessage(status, data) {
   return `Request failed (${status})`;
 }
 
+// One refresh at a time: parallel 401s share the same refresh call.
+let refreshInFlight = null;
+
+function refreshTokens() {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const refreshToken = localStorage.getItem(REFRESH_KEY);
+      if (!refreshToken) return false;
+      try {
+        const rr = await fetch(`${BASE}/auth/refresh`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!rr.ok) return false;
+        setTokens(await rr.json());
+        return true;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+// The stored login is no longer valid: clear it and go to the sign-in page.
+// Public pages (landing, report verification) never redirect.
+function handleExpiredLogin() {
+  const path = window.location.pathname;
+  const isPublic = path === '/' || path.startsWith('/verify/') || path === '/login';
+  const wasSignedIn = localStorage.getItem('nawi-authenticated') === '1';
+  if (!wasSignedIn || isPublic) return;
+  clearTokens();
+  window.location.assign('/login');
+}
+
 async function request(path, options = {}, retry = true) {
   const headers = { ...(options.body instanceof FormData ? {} : jsonHeaders), ...(options.headers || {}) };
   const token = localStorage.getItem(ACCESS_KEY);
   if (token) headers.Authorization = `Bearer ${token}`;
   let res = await fetch(`${BASE}${path}`, { ...options, headers });
-  if (res.status === 401 && retry && localStorage.getItem(REFRESH_KEY)) {
-    try {
-      const rr = await fetch(`${BASE}/auth/refresh`, {
-        method: 'POST',
-        headers: jsonHeaders,
-        body: JSON.stringify({ refresh_token: localStorage.getItem(REFRESH_KEY) }),
-      });
-      if (rr.ok) {
-        const d = await rr.json();
-        setTokens(d);
-        return request(path, options, false);
-      }
-    } catch {
-      // refresh failed
-    }
+  const isAuthCall = path.startsWith('/auth/');
+  if (res.status === 401 && retry && !isAuthCall) {
+    if (await refreshTokens()) return request(path, options, false);
+    handleExpiredLogin();
   }
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
@@ -71,7 +100,10 @@ export function setTokens(d) {
 }
 
 export function clearTokens() {
-  [ACCESS_KEY, REFRESH_KEY, 'nawi-authenticated', 'nawi-user', 'nawi-session'].forEach((k) => localStorage.removeItem(k));
+  [ACCESS_KEY, REFRESH_KEY, 'nawi-authenticated', 'nawi-user', 'nawi-session', 'nawi-local-mode'].forEach((k) => localStorage.removeItem(k));
+  // The next person signing in on this browser must not land in this
+  // user's working session.
+  void clearWorkingSession().catch(() => {});
 }
 
 export const api = {
@@ -135,8 +167,9 @@ export const api = {
   updateChecklistItem: (sessionId, body) =>
     request(`/sessions/${sessionId}/checklist/items`, { method: 'PUT', body: JSON.stringify(body) }),
 
-  // Finalization
+  // Finalization + the server's authoritative verdict for a session
   finalize: (id) => request(`/sessions/${id}/finalize`, { method: 'POST' }),
+  summary: (id) => request(`/sessions/${id}/summary`),
 
   // Reports
   reports: async () => {
@@ -155,6 +188,7 @@ export const api = {
   },
 
   // Attachments
+  attachments: (sessionId) => request(`/sessions/${sessionId}/attachments`),
   upload: async (sessionId, file) => {
     const f = new FormData();
     f.append('file', file);
@@ -167,9 +201,13 @@ export const api = {
 };
 
 export async function downloadFile(id, kind = 'pdf') {
-  const token = localStorage.getItem(ACCESS_KEY);
   const url = kind === 'docx' ? api.downloadDocxUrl(id) : api.downloadUrl(id);
-  const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  const authed = () => {
+    const token = localStorage.getItem(ACCESS_KEY);
+    return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  };
+  let r = await authed();
+  if (r.status === 401 && (await refreshTokens())) r = await authed();
   if (!r.ok) {
     let msg = `Unable to download report (${kind})`;
     try {
@@ -185,17 +223,24 @@ export async function downloadFile(id, kind = 'pdf') {
   const a = document.createElement('a');
   a.href = objUrl;
   a.download = `pattern-evaluation-report-${id}.${kind}`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(objUrl);
+  a.remove();
+  // Revoking synchronously can cancel the download in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(objUrl), 10000);
 }
 
 export const downloadReport = (id) => downloadFile(id, 'pdf');
 
+// True only when the NAWI backend itself answers (checked through the same
+// /api proxy as every other call, and by content — a dev server's HTML page
+// or another app on the port must not count as "connected").
 export async function health() {
-  const base = import.meta.env.VITE_API_URL || '/api/v1';
   try {
-    const r = await fetch(`${base.replace('/api/v1', '')}/health`);
-    return r.ok;
+    const r = await fetch(`${BASE}/health`, { cache: 'no-store' });
+    if (!r.ok) return false;
+    const body = await r.json();
+    return body?.status === 'ok' && body?.service === 'nawi-backend';
   } catch {
     return false;
   }

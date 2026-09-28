@@ -12,9 +12,39 @@ import {
 import SectionHeader from '@/components/SectionHeader';
 import { StatCard } from '@/components/Card';
 import Button from '@/components/Button';
-import { loadWorkingSession } from '@/lib/offlineStore';
+import { loadWorkingSession, saveWorkingSession } from '@/lib/offlineStore';
 import { api } from '@/api/client';
 import { normalizeDrift } from '@/lib/drift';
+import { trimDecimal } from '@/lib/utils';
+
+const OPEN_STATES = new Set(['draft', 'in_progress']);
+
+// Build the workspace's session object from a server session + instrument.
+function workingSessionFrom(serverSession, inst) {
+  return {
+    ...serverSession,
+    instrumentId: inst.id,
+    instrument_id: inst.id,
+    asset: `${inst.manufacturer} ${inst.model}`.trim(),
+    model: inst.model,
+    manufacturer: inst.manufacturer,
+    serial: inst.serial_number,
+    capacity: trimDecimal(inst.max_capacity),
+    unit: inst.base_unit,
+    accuracyClass: inst.accuracy_class,
+    verificationScaleInterval: trimDecimal(inst.verification_scale_interval),
+    displayInterval: trimDecimal(inst.display_interval || inst.verification_scale_interval),
+    minCapacity: trimDecimal(inst.min_capacity),
+    envValues: {
+      start_temp_c: serverSession.start_temp_c ?? '',
+      end_temp_c: serverSession.end_temp_c ?? '',
+      humidity_pct: serverSession.humidity_pct ?? '',
+      pressure_hpa: serverSession.pressure_hpa ?? '',
+    },
+    observations: [],
+    synced: true,
+  };
+}
 
 function formatTime(value) {
   if (!value) return '—';
@@ -72,6 +102,26 @@ export function Home() {
       .then((raw) => setEnvironment(normalizeDrift(raw)))
       .catch(() => setEnvironmentError(true));
   }, [session?.id]);
+
+  const openServerSessions = serverSessions.filter((s) => OPEN_STATES.has(s.status));
+  const serverCopy = session?.id ? serverSessions.find((s) => s.id === session.id) : null;
+  // The browser's working session is only "active" while the server still has
+  // it open (or it has not reached the server yet).
+  const localIsOpen = Boolean(session) && (String(session.id || '').startsWith('local-') || !serverCopy || OPEN_STATES.has(serverCopy.status));
+  const [resumeError, setResumeError] = useState('');
+
+  const resumeServerSession = async (serverSession) => {
+    setResumeError('');
+    try {
+      const inst = await api.instrument(serverSession.instrument_id);
+      const next = workingSessionFrom(serverSession, inst);
+      localStorage.setItem('nawi-session', JSON.stringify(next));
+      await saveWorkingSession(next);
+      setLocation('/sessions/active');
+    } catch (err) {
+      setResumeError(err.message || 'Could not open that session.');
+    }
+  };
 
   const openSessionsCount = serverSessions.filter(
     (s) => s.status !== 'completed' && s.status !== 'approved'
@@ -165,7 +215,7 @@ export function Home() {
             </Link>
           </div>
 
-          {session ? (
+          {localIsOpen ? (
             <div className="grid gap-5 p-5 sm:grid-cols-[1fr_150px] sm:items-center">
               <div>
                 <div className="flex items-center gap-2">
@@ -176,11 +226,11 @@ export function Home() {
                 </div>
                 <h3 className="mt-3 text-lg font-semibold">{session.asset || session.model || 'Instrument'}</h3>
                 <p className="mt-1 text-xs text-[#66837d]">
-                  Serial {session.serial || '—'} · {session.capacity || '—'} {session.unit || 'g'} max
+                  Serial {session.serial || '—'} · {trimDecimal(session.capacity) || '—'} {session.unit || 'g'} max
                 </p>
                 <div className="mt-4 flex items-center gap-2 text-xs text-[#66837d]">
                   <span>Status:</span>
-                  <span className="font-mono font-semibold text-[#17333c]">{session.status || 'draft'}</span>
+                  <span className="font-mono font-semibold text-[#17333c]">{serverCopy?.status || session.status || 'draft'}</span>
                 </div>
               </div>
               <Button
@@ -190,6 +240,23 @@ export function Home() {
               >
                 Resume session
               </Button>
+            </div>
+          ) : openServerSessions.length > 0 ? (
+            <div className="divide-y divide-[#e5ece8]">
+              {resumeError && <div className="px-5 py-3 text-xs text-[#a6423b]">{resumeError}</div>}
+              {openServerSessions.slice(0, 5).map((s) => (
+                <div key={s.id} className="flex items-center justify-between gap-4 px-5 py-4">
+                  <div>
+                    <div className="font-mono text-xs font-semibold text-[#17333c]">Session {String(s.id).slice(0, 8)}</div>
+                    <div className="mt-1 text-[11px] text-[#66837d]">
+                      {s.evaluation_mode === 'in_service' ? 'In-Service' : 'Initial'} · started {formatTime(s.started_at || s.created_at)}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="quiet" onClick={() => void resumeServerSession(s)} data-testid={`button-resume-${s.id}`}>
+                    Resume
+                  </Button>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="grid-paper m-5 rounded-lg border border-dashed border-[#bdd1c8] px-6 py-10 text-center">
@@ -222,20 +289,22 @@ export function Home() {
               <div className="mt-8 flex items-center gap-5">
                 <div className="gauge-ring grid h-28 w-28 shrink-0 place-items-center">
                   <div className="text-center">
-                    <div className="font-mono text-2xl text-[#102653]">
-                      {environment.level === 'warn' ? 'DRIFT' : 'OK'}
+                    <div className="font-mono text-2xl" style={{ color: environment.level === 'red' ? '#b24b43' : '#102653' }}>
+                      {environment.level === 'red' ? 'VOID' : environment.level === 'warn' ? 'DRIFT' : 'OK'}
                     </div>
                     <div className="mt-1 text-[9px] uppercase tracking-[.14em] text-[#627a98]">
-                      {environment.level === 'warn' ? 'flagged' : 'stable'}
+                      {environment.level === 'red' ? 're-run tests' : environment.level === 'warn' ? 'flagged' : 'stable'}
                     </div>
                   </div>
                 </div>
                 <div>
-                  <div className="font-mono text-xl">{environment.temperature ?? '—'}°C</div>
+                  <div className="font-mono text-xl">
+                    {environment.deltaC != null ? `ΔT ${environment.deltaC}` : (session?.envValues?.end_temp_c || session?.start_temp_c || '—')}°C
+                  </div>
                   <div className="mt-1 text-xs text-[#627a98]">
                     {environment.temperatureRange || 'standard range'}
                   </div>
-                  <div className="mt-4 font-mono text-xl">{environment.humidity ?? '—'}% RH</div>
+                  <div className="mt-4 font-mono text-xl">{session?.envValues?.humidity_pct || session?.humidity_pct || '—'}% RH</div>
                   <div className="mt-1 text-xs text-[#627a98]">
                     {environment.humidityRange || 'ambient range'}
                   </div>

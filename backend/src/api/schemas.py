@@ -10,14 +10,27 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
 from ..engine.models import (
     NonNegativeDecimal,
     StrictDecimal,
 )
+from ..engine.rounding import format_stored
+
+#: Stored metrology quantity as returned by the API: fixed-point string with
+#: at least 6 decimals (see ``format_stored``).
+OutDecimal = Annotated[Decimal, PlainSerializer(format_stored, return_type=str)]
+
+#: Ambient conditions a real laboratory can have. Anything outside is a
+#: typing error (e.g. -5000 degC), not a measurement.
+TemperatureC = Annotated[StrictDecimal, Field(ge=-50, le=100)]
+HumidityPct = Annotated[StrictDecimal, Field(ge=0, le=100)]
+PressureHpa = Annotated[StrictDecimal, Field(ge=300, le=1200)]
+
+_EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 
 # ---------------------------------------------------------------------------
 # Auth & users
@@ -51,7 +64,7 @@ class UserCreate(BaseModel):
     """POST /users body (admin only)."""
 
     full_name: str = Field(min_length=1, max_length=200)
-    email: str = Field(max_length=320)
+    email: str = Field(max_length=320, pattern=_EMAIL_PATTERN)
     password: str = Field(min_length=8, max_length=128)
     role: Literal["lab_technician", "approving_officer", "admin"]
 
@@ -98,10 +111,10 @@ class InstrumentOut(BaseModel):
     model: str
     serial_number: str
     accuracy_class: str
-    max_capacity: Decimal
-    min_capacity: Decimal
-    verification_scale_interval: Decimal
-    display_interval: Decimal | None
+    max_capacity: OutDecimal
+    min_capacity: OutDecimal
+    verification_scale_interval: OutDecimal
+    display_interval: OutDecimal | None
     base_unit: str
     n_max: Decimal
     created_by: uuid.UUID
@@ -135,17 +148,17 @@ class SessionCreate(BaseModel):
     #: verification (1× Table 6); ``in_service`` applies the 2× limits of
     #: §3.5.2 for re-verification of an instrument already in use.
     evaluation_mode: Literal["initial_verification", "in_service"] = "initial_verification"
-    start_temp_c: StrictDecimal | None = None
-    humidity_pct: StrictDecimal | None = None
-    pressure_hpa: StrictDecimal | None = None
+    start_temp_c: TemperatureC | None = None
+    humidity_pct: HumidityPct | None = None
+    pressure_hpa: PressureHpa | None = None
 
 
 class SessionPatch(BaseModel):
     """PATCH /sessions/{id} body — environment only."""
 
-    end_temp_c: StrictDecimal | None = None
-    humidity_pct: StrictDecimal | None = None
-    pressure_hpa: StrictDecimal | None = None
+    end_temp_c: TemperatureC | None = None
+    humidity_pct: HumidityPct | None = None
+    pressure_hpa: PressureHpa | None = None
 
 
 class SessionOut(BaseModel):
@@ -237,17 +250,32 @@ class ObservationOut(BaseModel):
     sequence_no: int
     revision_no: int
     supersedes_id: uuid.UUID | None
-    applied_load: Decimal
-    indication: Decimal
-    additional_load: Decimal
-    zero_error: Decimal
-    error_prior: Decimal
-    corrected_error: Decimal
-    mpe_limit: Decimal
+    applied_load: OutDecimal
+    indication: OutDecimal
+    additional_load: OutDecimal
+    zero_error: OutDecimal
+    error_prior: OutDecimal
+    corrected_error: OutDecimal
+    mpe_limit: OutDecimal
     verdict: str
     entered_at: datetime
     source: str
-    second_indication: Decimal | None = None
+    second_indication: OutDecimal | None = None
+
+
+class EvaluationSummaryOut(BaseModel):
+    """GET /sessions/{id}/summary — the server's overall verdict + reasons."""
+
+    session_id: str
+    session_status: str
+    final: bool
+    result: Literal["PASS", "FAIL", "INCOMPLETE"]
+    reasons: list[str]
+    counts: dict[str, int]
+    checks: list[dict[str, str]]
+    checklist: dict[str, int]
+    drift: DriftReport | None = None
+    completion: dict[str, object]
 
 
 class ObservationCreatedResponse(BaseModel):
@@ -291,6 +319,12 @@ class ReportArchiveOut(BaseModel):
     template_version: str
     created_at: datetime
     overall_result: Literal["PASS", "FAIL", "INCOMPLETE"] = "INCOMPLETE"
+    # Denormalized so the archive needs no extra session/instrument calls.
+    instrument_manufacturer: str | None = None
+    instrument_model: str | None = None
+    instrument_serial: str | None = None
+    evaluation_mode: str | None = None
+    session_status: str | None = None
 
 
 class ReportOut(BaseModel):

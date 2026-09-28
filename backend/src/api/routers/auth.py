@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..audit_helpers import audit
@@ -14,22 +17,55 @@ from ..schemas import LoginRequest, RefreshRequest, TokenResponse, UserCreate, U
 router = APIRouter(prefix="/auth", tags=["auth"])
 users_router = APIRouter(prefix="/users", tags=["users"])
 
+#: Brute-force brake: this many failed logins for one (client IP, email)
+#: within the window blocks further attempts until the window rolls over.
+_MAX_FAILED_LOGINS = 10
+_FAILED_LOGIN_WINDOW_S = 300.0
+_failed_logins: dict[tuple[str, str], list[float]] = {}
+_failed_lock = threading.Lock()
+
+
+def _recent_failures(key: tuple[str, str], now: float) -> list[float]:
+    stamps = [t for t in _failed_logins.get(key, []) if now - t < _FAILED_LOGIN_WINDOW_S]
+    if stamps:
+        _failed_logins[key] = stamps
+    else:
+        _failed_logins.pop(key, None)
+    return stamps
+
 
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request, db: DbDep) -> TokenResponse:
     """Exchange email+password for a token pair."""
     from ...services.user_service import authenticate
 
+    # Socket address, not X-Forwarded-For: a client could rotate that header
+    # to dodge the limit.
+    key = (request.client.host if request.client else "?", body.email.strip().lower())
+    now = time.monotonic()
+    with _failed_lock:
+        recent = _recent_failures(key, now)
+        if len(recent) >= _MAX_FAILED_LOGINS:
+            retry_after = int(_FAILED_LOGIN_WINDOW_S - (now - recent[0])) + 1
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                f"too many failed sign-in attempts; try again in {retry_after} s",
+                headers={"Retry-After": str(retry_after)},
+            )
     try:
         _user, access, refresh = authenticate(
             db, email=body.email, password=body.password
         )
     except AuthError as exc:
+        with _failed_lock:
+            _failed_logins.setdefault(key, []).append(now)
         audit(
             db, request, None, AuditAction.DENIED, "auth.login_failed",
             detail={"email": body.email, "reason": str(exc)},
         )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
+    with _failed_lock:
+        _failed_logins.pop(key, None)
     audit(db, request, _user, AuditAction.LOGIN, "auth.login")
     return TokenResponse(
 

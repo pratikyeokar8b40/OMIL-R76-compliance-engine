@@ -1,6 +1,6 @@
 """SQLAlchemy models — the five canonical tables (architecture.md §4.2).
 
-Metrology numerics are stored as ``Numeric(18, 6)`` — never floats
+Metrology numerics are stored as ``Numeric(28, 10)`` — never floats
 (architecture.md §4.3 rule 2). Observations are APPEND-ONLY: the service
 layer never issues UPDATE/DELETE on this table (rule 1); supersession uses
 ``supersedes_id`` + latest-wins queries on ``(test_type, position,
@@ -29,6 +29,12 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from ..engine import EvaluationMode
+
+
+#: Every metrology quantity column: 18 integer + 10 fractional digits. Class I
+#: instruments in kg have e = 0.000001, so half-e and dL steps need 7+ places;
+#: the previous NUMERIC(18, 6) silently rounded them (e.g. MPE 0.5e -> 1e).
+_METROLOGY_NUMERIC = Numeric(28, 10)
 
 
 def _utcnow() -> datetime:
@@ -147,10 +153,10 @@ class Instrument(Base):
     accuracy_class: Mapped[AccuracyClassEnum] = mapped_column(
         Enum(AccuracyClassEnum, native_enum=False, length=8)
     )
-    max_capacity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    min_capacity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    verification_scale_interval: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    display_interval: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    max_capacity: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    min_capacity: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    verification_scale_interval: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    display_interval: Mapped[Decimal | None] = mapped_column(_METROLOGY_NUMERIC, nullable=True)
     base_unit: Mapped[str] = mapped_column(String(8), default="kg")
     n_max: Mapped[Decimal] = mapped_column(Numeric(24, 6))  # Max / e, computed once
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
@@ -225,20 +231,20 @@ class Observation(Base):
         Uuid, ForeignKey("observations.id"), nullable=True
     )
 
-    applied_load: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    indication: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    additional_load: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal("0"))
-    zero_error: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal("0"))
+    applied_load: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    indication: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    additional_load: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC, default=Decimal("0"))
+    zero_error: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC, default=Decimal("0"))
     # Discrimination only (A.4.8.2): indication I2 after the 1.4 d extra
     # load. NULL for every other test type.
     second_indication: Mapped[Decimal | None] = mapped_column(
-        Numeric(18, 6), nullable=True
+        _METROLOGY_NUMERIC, nullable=True
     )
 
     # Engine-computed at insert (architecture.md §4.3 rule 3):
-    error_prior: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    corrected_error: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    mpe_limit: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    error_prior: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    corrected_error: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
+    mpe_limit: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
     verdict: Mapped[ObservationVerdict] = mapped_column(
         Enum(ObservationVerdict, native_enum=False, length=8)
     )

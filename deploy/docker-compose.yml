@@ -35,8 +35,9 @@ services:
       DATABASE_URL: postgresql+psycopg://oiml:${POSTGRES_PASSWORD}@db:5432/oiml
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in deploy/.env}
       ENVIRONMENT: production
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8080}
-      REPORT_VERIFY_BASE_URL: ${REPORT_VERIFY_BASE_URL:-http://localhost:8080}
+      # JSON list: pydantic-settings rejects a bare URL for a list field.
+      CORS_ALLOW_ORIGINS: '${CORS_ALLOW_ORIGINS:-["http://localhost:8080"]}'
+      REPORT_VERIFY_BASE_URL: ${REPORT_VERIFY_BASE_URL:-http://localhost:8080/verify}
     depends_on:
       db:
         condition: service_healthy
