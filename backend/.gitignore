@@ -1,2 +1,6 @@
 oiml_dev.db
+*.db
 uploads/
+reports/
+__pycache__/
+.env
