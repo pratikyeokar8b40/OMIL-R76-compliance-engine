@@ -7,13 +7,8 @@ evaluated at insert inside the service layer.
 
 from __future__ import annotations
 
-from decimal import Decimal
-
-from fastapi import FastAPI, Request
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from src.core.config import settings
 
@@ -38,16 +33,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.exception_handler(RequestValidationError)
-async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
-    """422 with a JSON-safe body. The default handler turns Decimal inputs
-    into floats, and a NaN/Infinity float makes the response itself fail
-    (a 500 for what is a client error)."""
-    detail = jsonable_encoder(exc.errors(), custom_encoder={Decimal: str, Exception: str})
-    return JSONResponse(status_code=422, content={"detail": detail})
-
-
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(auth.users_router, prefix="/api/v1")
 app.include_router(instruments.router, prefix="/api/v1")
@@ -61,10 +46,6 @@ app.include_router(reports.public_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["meta"])
-@app.get("/api/v1/health", tags=["meta"], include_in_schema=False)
 def health() -> dict[str, str]:
-    """Liveness probe (deployment target §12). Also served under /api/v1 so
-    the browser reaches it through the same proxy as every other call (the
-    dev server answered bare /health with its own HTML page, so the UI
-    always showed "Connected")."""
-    return {"status": "ok", "service": "nawi-backend"}
+    """Liveness probe (deployment target §12)."""
+    return {"status": "ok"}

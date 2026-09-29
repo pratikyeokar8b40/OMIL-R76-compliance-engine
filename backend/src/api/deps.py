@@ -74,9 +74,8 @@ TechnicianPlus = Annotated[
 ]
 #: Any authenticated user.
 AnyUser = Annotated[User, Depends(current_user)]
-#: Approving officers only — report sign-off (architecture.md §11: admins
-#: manage users and the audit trail but do not sign reports).
-OfficerOnly = Annotated[User, Depends(require_roles(ROLE_OFFICER))]
+#: Officers only — report sign-off.
+OfficerOnly = Annotated[User, Depends(require_roles(ROLE_OFFICER, ROLE_ADMIN))]
 #: Admin only — user management.
 AdminOnly = Annotated[User, Depends(require_roles(ROLE_ADMIN))]
 

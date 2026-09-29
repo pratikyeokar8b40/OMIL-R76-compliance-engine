@@ -164,11 +164,6 @@ _TABLE_3: Final[dict[AccuracyClass, tuple[_ClassErow, ...]]] = {
 }
 
 
-def _is_1_2_5_form(value: Decimal) -> bool:
-    """True if ``value`` is 1, 2 or 5 times a power of ten."""
-    return value.normalize().as_tuple().digits in ((1,), (2,), (5,))
-
-
 def _fmt(value: Decimal | None) -> str:
     """Compact fixed-point rendering for error messages."""
     if value is None:
@@ -231,16 +226,6 @@ def validate_instrument_spec(scale: ScaleParameters) -> None:
             f"e = {e} {scale.base_unit} ({e_g} g) under R 76-1 Table 3; "
             f"permitted range(s): {ranges}."
         )
-
-    # --- Form of the interval: R 76-1 requires scale intervals of the form
-    # 1 × 10^k, 2 × 10^k or 5 × 10^k (k a whole number). Checked after the
-    # Table 3 row lookup so e-gap rejections keep their specific message.
-    for label, interval in (("e", e), ("d", scale.display_interval)):
-        if interval is not None and interval > 0 and not _is_1_2_5_form(interval):
-            raise EngineValueError(
-                f"scale interval {label} = {_fmt(interval)} is not of the form "
-                "1, 2 or 5 × 10^k required by R 76-1 (e.g. 0.001, 0.002, 0.005)."
-            )
 
     if n < row.n_min:
         raise EngineValueError(

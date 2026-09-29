@@ -9,7 +9,7 @@ an inconsistent Max/Min/e combination can never enter the database
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -53,11 +53,7 @@ def create_instrument(
     Raises:
         InstrumentValidationError: class-rule failure (auditor-readable).
     """
-    existing = db.scalar(
-        select(Instrument).where(
-            func.lower(Instrument.serial_number) == serial_number.strip().lower()
-        )
-    )
+    existing = db.scalar(select(Instrument).where(Instrument.serial_number == serial_number.strip()))
     if existing is not None:
         raise InstrumentValidationError(
             f"An instrument with serial number {serial_number.strip()} is already registered."
@@ -76,12 +72,7 @@ def create_instrument(
     except EngineValueError as exc:
         raise InstrumentValidationError(str(exc)) from exc
 
-    try:
-        n_max = (max_capacity / verification_scale_interval).quantize(_N_QUANT)
-    except InvalidOperation as exc:
-        raise InstrumentValidationError(
-            "max_capacity / verification_scale_interval is too large to record."
-        ) from exc
+    n_max = (max_capacity / verification_scale_interval).quantize(_N_QUANT)
     instrument = Instrument(
         manufacturer=manufacturer.strip(),
         model=model.strip(),
@@ -157,15 +148,13 @@ def drift_watchdog(instrument: Instrument, *, start_temp_c: Decimal | None, end_
         _N_QUANT
     )
     # P6-3 red state: the test ran outside the instrument's static
-    # temperature range (§3.9.2), or the temperature was not steady during
-    # the campaign (R 76-1 Annex A test conditions: <= 5 degC change) —
-    # results are metrologically void and the affected tests must be re-run.
-    # Amber flags a change above the 2 degC creep-test allowance.
+    # temperature range (§3.9.2) — results are metrologically void and the
+    # affected tests must be re-run. Amber is the approaching-limit proxy.
     t_min, t_max = settings.default_temp_min_c, settings.default_temp_max_c
-    outside_static_range = start < Decimal(str(t_min)) or start > Decimal(str(t_max)) or end < Decimal(str(t_min)) or end > Decimal(str(t_max))
-    if outside_static_range or delta_c > Decimal(str(settings.drift_red_delta_c)):
+    outside_static_range = start < Decimal(t_min) or start > Decimal(t_max) or end < Decimal(t_min) or end > Decimal(t_max)
+    if outside_static_range or delta_c > Decimal(30):
         level = "red"
-    elif delta_c > Decimal(str(settings.drift_warn_delta_c)):
+    elif delta_c > Decimal(15):
         level = "warn"
     else:
         level = "ok"

@@ -36,7 +36,6 @@ from src.report import (  # noqa: E402
     sha256_hex,
 )
 from src.report.service import regenerate_artifacts  # noqa: E402
-from tests._helpers import make_ready  # noqa: E402
 
 create_all()
 
@@ -113,7 +112,6 @@ def finalized(tokens) -> dict[str, str]:
     )
     assert obs.status_code == 201, obs.text  # flagship FAIL: Ec 0.0085 > MPE 0.005
 
-    make_ready(client, _auth(tokens["tech"]), session_id)
     fin = client.post(f"/api/v1/sessions/{session_id}/finalize", headers=_auth(tokens["tech"]))
     assert fin.status_code == 200, fin.text
 
@@ -194,6 +192,54 @@ class TestGenerationAndSeal:
         finally:
             db.close()
 
+    def test_temperature_no_load_report_includes_chamber_temperature(self, tokens) -> None:
+        instrument = client.post(
+            "/api/v1/instruments",
+            headers=_auth(tokens["tech"]),
+            json={
+                "manufacturer": "Essae",
+                "model": "DS-415",
+                "serial_number": "R5-TEMP-REPORT-001",
+                "accuracy_class": "III",
+                "max_capacity": "15",
+                "min_capacity": "0.1",
+                "verification_scale_interval": "0.005",
+            },
+        )
+        assert instrument.status_code == 201, instrument.text
+
+        session = client.post(
+            "/api/v1/sessions",
+            headers=_auth(tokens["tech"]),
+            json={"instrument_id": instrument.json()["id"], "start_temp_c": "22", "humidity_pct": "48"},
+        )
+        assert session.status_code == 201, session.text
+        session_id = session.json()["id"]
+
+        r = client.post(
+            f"/api/v1/sessions/{session_id}/observations",
+            headers=_auth(tokens["tech"]),
+            json={
+                "test_type": "temperature_no_load",
+                "sequence_no": 1,
+                "applied_load": "0",
+                "indication": "0.002",
+                "additional_load": "0",
+                "chamber_temperature_c": "10.50",
+            },
+        )
+        assert r.status_code == 201, r.text
+
+        finalize = client.post(f"/api/v1/sessions/{session_id}/finalize", headers=_auth(tokens["tech"]))
+        assert finalize.status_code == 200, finalize.text
+
+        db = SessionLocal()
+        try:
+            data = aggregate_session(db, __import__("uuid").UUID(session_id))
+            assert data.observations["temperature_no_load"][0]["temperature_c"] == "10.50"
+        finally:
+            db.close()
+
 
 class TestVerification:
     def test_red_drift_fails_passing_observations(self, tokens) -> None:
@@ -232,7 +278,6 @@ class TestVerification:
         )
         assert observation.status_code == 201, observation.text
         assert observation.json()["evaluation"]["verdict"] == "PASS"
-        make_ready(client, _auth(tokens["tech"]), session_id)
         patched = client.patch(
             f"/api/v1/sessions/{session_id}",
             headers=_auth(tokens["tech"]),
@@ -248,7 +293,7 @@ class TestVerification:
         try:
             data = aggregate_session(db, __import__("uuid").UUID(session_id))
             assert data.overall["result"] == "FAIL"
-            assert data.overall["pass_count"] == data.overall["total"]
+            assert data.overall["pass_count"] == 1
             assert data.overall["fail_count"] == 0
             assert "EXCEEDED" in data.overall["drift_note"]
         finally:

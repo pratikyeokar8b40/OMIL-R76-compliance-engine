@@ -281,6 +281,7 @@ class Observation:
     indication: Decimal
     additional_load: Decimal = field(default_factory=lambda: Decimal("0"))
     zero_error: Decimal = field(default_factory=lambda: Decimal("0"))
+    chamber_temperature_c: Decimal | None = None
     # Discrimination only (A.4.8.2 / R 76-2 sheet 4.1.1): indication after
     # the extra load of 1.4 d. ``None`` for every other test type.
     second_indication: Decimal | None = None
@@ -304,6 +305,15 @@ class Observation:
             self, "zero_error",
             coerce_decimal(self.zero_error, "zero_error (E0)", allow_negative=True),
         )
+        if self.chamber_temperature_c is not None:
+            object.__setattr__(
+                self, "chamber_temperature_c",
+                coerce_decimal(
+                    self.chamber_temperature_c,
+                    "chamber_temperature_c (°C)",
+                    allow_negative=True,
+                ),
+            )
         if self.second_indication is not None:
             object.__setattr__(
                 self, "second_indication",

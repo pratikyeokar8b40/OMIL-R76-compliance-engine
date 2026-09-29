@@ -87,7 +87,7 @@ def render_docx(data: ReportData, *, verify_base_url: str, sha256: str, report_i
     doc.add_heading("4 · Verification seal", level=1)
     doc.add_picture(io.BytesIO(qr_png_bytes(qr_payload(verify_base_url, report_id, sha256))), width=Mm(34))
     doc.add_paragraph(f"Report ID: {report_id}")
-    p = doc.add_paragraph("Content digest (SHA-256 of the report data): ")
+    p = doc.add_paragraph("SHA-256 (content seal): ")
     run = p.add_run(sha256)
     run.font.name = "Courier New"
     run.font.size = Pt(7)
@@ -117,20 +117,6 @@ def render_docx(data: ReportData, *, verify_base_url: str, sha256: str, report_i
             f"Checklist: {prog.get('passed', 0)} passed, {prog.get('failed', 0)} failed, "
             f"{prog.get('open', 0)} open, {prog.get('total', 0)} items."
         )
-
-    checks = data.overall.get("checks") or []
-    if checks:
-        doc.add_heading("5.X · Criteria across readings", level=1)
-        crit = doc.add_table(rows=1, cols=4)
-        crit.style = "Table Grid"
-        for c, t in zip(crit.rows[0].cells, ("Criterion", "Clause", "Result", "Detail")):
-            c.text = t
-        for check in checks:
-            cells = crit.add_row().cells
-            cells[0].text = check["title"]
-            cells[1].text = check["clause"]
-            cells[2].text = check["verdict"]
-            cells[3].text = check["detail"]
 
     doc.add_heading("6 · Result summary", level=1)
     _kv_table(

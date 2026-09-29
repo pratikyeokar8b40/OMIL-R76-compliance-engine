@@ -1,7 +1,2 @@
 oiml_dev.db
-oiml_dev.db-wal
-oiml_dev.db-shm
-*.db-journal
 uploads/
-reports/
-.jwt_secret

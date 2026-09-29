@@ -36,10 +36,9 @@ from reportlab.platypus import (
 from .aggregate import ReportData, test_title
 from .seal import qr_payload, qr_png_bytes
 
-#: Delta via ReportLab's <greek> markup — the standard Helvetica font is
-#: Latin-1-only and cannot encode 'Δ'. (<font name="Symbol">D</font> rendered
-#: as a black box in Chrome/pdfium, so the header read "■L".)
-_DELTA: Final = "<greek>D</greek>"
+#: Delta rendered via the Symbol font inside Paragraph markup — the standard
+#: Helvetica font is Latin-1-only and cannot encode 'Δ' directly.
+_DELTA: Final = '<font name="Symbol">D</font>'
 
 _PAGE_W, _PAGE_H = A4
 _MARGIN: Final = 18 * mm
@@ -195,7 +194,7 @@ def _cover(data: ReportData, verify_base_url: str, sha256: str, report_id: str) 
                 Paragraph(
                     f"<b>Integrity seal</b><br/>Scan to verify authenticity.<br/><br/>"
                     f"Report ID<br/><font name='Courier' size='7'>{escape(report_id)}</font><br/><br/>"
-                    f"Content digest (SHA-256 of the report data)<br/><font name='Courier' size='6'>{sha256}</font>",
+                    f"SHA-256<br/><font name='Courier' size='6'>{sha256}</font>",
                     _small,
                 ),
             ]
@@ -266,29 +265,6 @@ def _body(data: ReportData) -> list[object]:
                 _small,
             )
         )
-
-    checks = data.overall.get("checks") or []
-    if checks:
-        flow.append(Paragraph("5.X · Criteria across readings", _h2))
-        rows: list[list[object]] = [[Paragraph(t, _th) for t in ("Criterion", "Clause", "Result", "Detail")]]
-        fail_rows: list[int] = []
-        for i, c in enumerate(checks, start=1):
-            rows.append([
-                Paragraph(escape(c["title"]), _td),
-                Paragraph(escape(c["clause"]), _td),
-                Paragraph(f"<b>{escape(c['verdict'])}</b>", _td),
-                Paragraph(escape(c["detail"]), _td),
-            ])
-            if c["verdict"] == "FAIL":
-                fail_rows.append(i)
-        crit = Table(rows, colWidths=[42 * mm, 24 * mm, 20 * mm, 84 * mm], repeatRows=1)
-        crit.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ("BACKGROUND", (0, 0), (-1, 0), _ACCENT),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            *[("BACKGROUND", (0, r), (-1, r), _FAIL_FILL) for r in fail_rows],
-        ]))
-        flow.append(crit)
 
     flow += [
         Paragraph("6 · Result summary", _h2),

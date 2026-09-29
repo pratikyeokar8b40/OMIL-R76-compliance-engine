@@ -267,11 +267,6 @@ _MPE_TABLE: Final[dict[AccuracyClass, tuple[_MPEBand, ...]]] = {
 }
 
 
-def _plain(value: Decimal) -> str:
-    """Human-readable number for error messages ("15", not "15.0000000000")."""
-    return format(value.normalize(), "f")
-
-
 def dec(value: float | int | str | Decimal) -> Decimal:
     """Convert a value to :class:`Decimal` exactly, or fail loudly.
 
@@ -415,15 +410,15 @@ def evaluate(
     """
     if observation.additional_load > scale.verification_scale_interval:
         raise EngineValueError(
-            f"additional_load (dL) {_plain(observation.additional_load)} must not "
+            f"additional_load (dL) {observation.additional_load} must not "
             f"exceed verification_scale_interval (e) "
-            f"{_plain(scale.verification_scale_interval)}: the changeover point lies "
+            f"{scale.verification_scale_interval}: the changeover point lies "
             "within one interval; check the reading."
         )
     if observation.applied_load > scale.max_capacity:
         raise EngineValueError(
-            f"applied_load (L) {_plain(observation.applied_load)} exceeds "
-            f"max_capacity (Max) {_plain(scale.max_capacity)}: test loads must lie "
+            f"applied_load (L) {observation.applied_load} exceeds "
+            f"max_capacity (Max) {scale.max_capacity}: test loads must lie "
             "within the legal range."
         )
 
@@ -457,14 +452,14 @@ def evaluate(
             raise EngineValueError(
                 "discrimination (digital, A.4.8.2) applies only to "
                 "instruments with d >= 5 mg; this instrument has "
-                f"d = {_plain(d)} {scale.base_unit}."
+                f"d = {d} {scale.base_unit}."
             )
         delta = observation.second_indication - observation.indication
         if delta < 0:
             raise EngineValueError(
-                f"second_indication (I2) {_plain(observation.second_indication)} is "
+                f"second_indication (I2) {observation.second_indication} is "
                 "below the pre-extra-load indication (I1) "
-                f"{_plain(observation.indication)}: the indication must INCREASE "
+                f"{observation.indication}: the indication must INCREASE "
                 "after the 1.4 d extra load; check the reading."
             )
         passed = delta >= d
