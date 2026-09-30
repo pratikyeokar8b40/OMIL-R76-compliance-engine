@@ -15,7 +15,7 @@ downloads/
 eggs/
 .eggs/
 # Anchored to the repo root: an unanchored `lib/` also ignored
-# "NAWI Frontend 7/src/lib/" and kept the frontend from building on clones.
+# "frontend/src/lib/" and kept the frontend from building on clones.
 /lib/
 /lib64/
 parts/
@@ -233,3 +233,7 @@ deploy/.env
 # Node dependencies anywhere in the tree (a stray frontend/node_modules was
 # committed once the old frontend/.gitignore went away with that folder).
 node_modules/
+
+# Old frontend location (moved to frontend/ on 2026-09-30); a stale local copy
+# must never be re-committed.
+/NAWI Frontend 7/

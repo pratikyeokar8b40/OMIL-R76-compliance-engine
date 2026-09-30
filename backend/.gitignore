@@ -5,3 +5,6 @@ oiml_dev.db-shm
 uploads/
 reports/
 .jwt_secret
+*.db
+__pycache__/
+.env

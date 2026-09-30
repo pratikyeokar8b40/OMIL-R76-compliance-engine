@@ -161,6 +161,7 @@ def _insert_observation(
     indication: Decimal,
     additional_load: Decimal,
     zero_error: Decimal,
+    chamber_temperature_c: Decimal | None = None,
     source: ObservationSource,
     second_indication: Decimal | None = None,
 ) -> Observation:
@@ -183,11 +184,24 @@ def _insert_observation(
             "an observation with this logical identity and revision already "
             "exists; submit a higher revision via batch sync to supersede it"
         )
+    if test_type == ObservationTestType.TEMPERATURE_NO_LOAD:
+        if applied_load != Decimal("0"):
+            raise EngineValueError("temperature_no_load rows are no-load zero determinations (3.9.2.3); applied_load must be 0.")
+        if chamber_temperature_c is None:
+            raise EngineValueError("temperature_no_load requires chamber_temperature_c in °C.")
+        from ..core.config import settings
+        temp_min = Decimal(str(settings.default_temp_min_c))
+        temp_max = Decimal(str(settings.default_temp_max_c))
+        if chamber_temperature_c < temp_min or chamber_temperature_c > temp_max:
+            raise EngineValueError(
+                f"chamber_temperature_c must be within the configured static range {temp_min} °C to {temp_max} °C for this test."
+            )
+
     result = evaluate(
         _scale_params_for(session),
         _observation_from(
             applied_load, indication, additional_load, zero_error,
-            second_indication,
+            chamber_temperature_c, second_indication,
         ),
         mode=session.evaluation_mode,
         test_type=test_type.value,
@@ -203,6 +217,7 @@ def _insert_observation(
         indication=indication,
         additional_load=additional_load,
         zero_error=zero_error,
+        chamber_temperature_c=chamber_temperature_c,
         second_indication=second_indication,
         error_prior=result.error_prior,
         corrected_error=result.corrected_error,
@@ -220,6 +235,7 @@ def _observation_from(
     indication: Decimal,
     additional_load: Decimal,
     zero_error: Decimal,
+    chamber_temperature_c: Decimal | None = None,
     second_indication: Decimal | None = None,
 ) -> Any:
     """Lightweight adapter into the engine's Observation contract."""
@@ -230,6 +246,7 @@ def _observation_from(
         indication=indication,
         additional_load=additional_load,
         zero_error=zero_error,
+        chamber_temperature_c=chamber_temperature_c,
         second_indication=second_indication,
     )
 
@@ -246,6 +263,7 @@ def add_observation(
     indication: Decimal,
     additional_load: Decimal = Decimal("0"),
     zero_error: Decimal = Decimal("0"),
+    chamber_temperature_c: Decimal | None = None,
     source: str = "manual",
     second_indication: Decimal | None = None,
 ) -> tuple[Observation, dict[str, str]]:
@@ -276,6 +294,7 @@ def add_observation(
         indication=indication,
         additional_load=additional_load,
         zero_error=zero_error,
+        chamber_temperature_c=chamber_temperature_c,
         source=ObservationSource(source),
         second_indication=second_indication,
     )
@@ -297,7 +316,8 @@ def _dec(item: dict[str, Any], key: str) -> Decimal:
         value = _numeric_string_to_decimal(raw)
     except (PrecisionError, ValueError) as exc:
         raise ValueError(f"{key}: {exc}") from exc
-    if key != "zero_error" and value < 0:
+    # Differences (E0) and temperatures may be negative; masses may not.
+    if key not in ("zero_error", "chamber_temperature_c") and value < 0:
         raise ValueError(f"{key}: must be >= 0")
     return value  # type: ignore[return-value]
 
@@ -383,6 +403,11 @@ def sync_observation_batch(
                     if "additional_load" in item
                     else Decimal("0"),
                     zero_error=_dec(item, "zero_error") if "zero_error" in item else Decimal("0"),
+                    chamber_temperature_c=(
+                        _dec(item, "chamber_temperature_c")
+                        if "chamber_temperature_c" in item and item["chamber_temperature_c"] is not None
+                        else None
+                    ),
                     source=ObservationSource(str(item.get("source", "manual"))),
                     second_indication=(
                         _dec(item, "second_indication")

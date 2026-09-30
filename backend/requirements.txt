@@ -9,6 +9,7 @@ pyjwt>=2.9,<3
 bcrypt>=4.2,<5
 python-multipart>=0.0.12          # multipart uploads (attachments)
 python-dotenv>=1.0                # .env loading for local dev
+psycopg[binary]>=3.1,<4          # PostgreSQL driver (Railway/Render production)
 
 # --- Report generation (Phase 5) ---------------------------------------
 reportlab>=4.2,<6                 # authoritative R-76-2 PDF rendering

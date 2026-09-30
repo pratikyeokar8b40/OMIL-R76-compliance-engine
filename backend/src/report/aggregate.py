@@ -168,6 +168,8 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
         rows_by_test.setdefault(key, []).append(
             {
                 "position": obs.position or "-",
+                # Temperature effect on no-load rows record the chamber temperature.
+                "temperature_c": _fmt(obs.chamber_temperature_c, 2),
                 "seq": str(obs.sequence_no),
                 "L": _fmt(obs.applied_load, places),
                 "I": _fmt(obs.indication, places),

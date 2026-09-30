@@ -1,10 +1,8 @@
 FROM node:22-alpine AS build
 WORKDIR /app
-# The frontend lives in "NAWI Frontend 7/" (the old frontend/ folder was
-# removed); the JSON form of COPY is required for paths with spaces.
-COPY ["NAWI Frontend 7/package.json", "NAWI Frontend 7/package-lock.json", "./"]
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-COPY ["NAWI Frontend 7/", "./"]
+COPY frontend/ ./
 RUN npm run build
 
 FROM nginx:1.27-alpine

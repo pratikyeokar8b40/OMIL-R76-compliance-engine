@@ -33,16 +33,20 @@ def _kv_table(doc: Document, pairs: list[tuple[str, str]]) -> None:
                     r.font.size = Pt(9)
 
 
-def _obs_table(doc: Document, rows: list[dict[str, str]]) -> None:
+def _obs_table(doc: Document, rows: list[dict[str, str]], test_type: str = "") -> None:
+    # Same column choice as the PDF: chamber temperature instead of position.
+    by_temperature = test_type == "temperature_no_load"
+    second = "temperature_c" if by_temperature else "position"
+    titles = ("#", "T (°C)") + _OBS_COLS[2:] if by_temperature else _OBS_COLS
     table = doc.add_table(rows=1 + len(rows), cols=len(_OBS_COLS))
     table.style = "Table Grid"
-    for col, title in zip(table.rows[0].cells, _OBS_COLS):
+    for col, title in zip(table.rows[0].cells, titles):
         col.text = title
         for r in col.paragraphs[0].runs:
             r.bold = True
             r.font.size = Pt(8)
     for i, r in enumerate(rows, start=1):
-        values = (r["seq"], r["position"], r["L"], r["I"], r["dL"], r["E"], r["Ec"], r["MPE"], r["MPE_e"], r["verdict_glyph"])
+        values = (r["seq"], r.get(second, "-"), r["L"], r["I"], r["dL"], r["E"], r["Ec"], r["MPE"], r["MPE_e"], r["verdict_glyph"])
         for col, value in zip(table.rows[i].cells, values):
             col.text = value
             for p in col.paragraphs:
@@ -96,7 +100,7 @@ def render_docx(data: ReportData, *, verify_base_url: str, sha256: str, report_i
     for i, (test_type, rows) in enumerate(data.observations.items(), start=1):
         fails = sum(1 for r in rows if r["verdict"] == "FAIL")
         doc.add_heading(f"5.{i} · {test_title(test_type)} — {len(rows)} reading(s), {fails} failed", level=2)
-        _obs_table(doc, rows)
+        _obs_table(doc, rows, test_type)
 
     if data.checklist:
         doc.add_heading("5.C · Checklist (R 76-2 sheet 17)", level=1)

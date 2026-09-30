@@ -147,7 +147,7 @@ class ScaleParametersIn(BaseModel):
 
 
 class ObservationIn(BaseModel):
-    """Ingress schema for one raw bench reading (L, I, dL, E0)."""
+    """Ingress schema for one raw bench reading (L, I, dL, E0, chamber temp)."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -155,6 +155,7 @@ class ObservationIn(BaseModel):
     indication: NonNegativeDecimal = Field(description="I, base unit.")
     additional_load: NonNegativeDecimal = Field(default=Decimal("0"))
     zero_error: StrictDecimal = Field(default=Decimal("0"))
+    chamber_temperature_c: StrictDecimal | None = Field(default=None, description="Chamber temperature in °C.")
 
     def to_domain(self) -> Observation:
         """Build the pure-domain contract; engine errors propagate verbatim."""
@@ -163,6 +164,7 @@ class ObservationIn(BaseModel):
             indication=self.indication,
             additional_load=self.additional_load,
             zero_error=self.zero_error,
+            chamber_temperature_c=self.chamber_temperature_c,
         )
 
 

@@ -84,15 +84,16 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m scripts.seed_finale        # demo users, 3 instruments, a signed report, an open session
 python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
-python -m pytest                     # 141 tests
+python -m pytest                     # 153 tests
 ```
 
 **Frontend** (Node 20+):
 
 ```bash
-cd "NAWI Frontend 7"
+cd frontend
 npm install
 npm run dev                          # http://localhost:5174, proxies /api to 127.0.0.1:8000
+npm test                             # 23 tests: preview engine vs golden vectors, gate drift
 ```
 
 If port 8000 is used by something else, run the backend on another port and point the frontend at it:
@@ -116,9 +117,9 @@ OMIL-R76-compliance-engine/
 │   │   ├── report/            # snapshot → PDF + DOCX, seal (SHA-256 + QR)
 │   │   └── db/                # SQLAlchemy models (append-only observations, audit log)
 │   ├── alembic/               # migrations (Docker/PostgreSQL path)
-│   ├── tests/                 # 141 pytest tests incl. golden vectors
+│   ├── tests/                 # 153 pytest tests incl. golden vectors
 │   └── scripts/               # seed, seed_finale (demo dataset), smoke scripts
-├── NAWI Frontend 7/           # React frontend
+├── frontend/                  # React frontend
 │   └── src/
 │       ├── pages/             # Dashboard, New evaluation, Active session, Reports, Verify, Admin
 │       ├── components/modules # one screen per R-76 test + checklist + verdict

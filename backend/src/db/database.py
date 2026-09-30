@@ -55,3 +55,29 @@ def create_all() -> None:
     from .models import Base  # noqa: F401 - ensure metadata is loaded
 
     Base.metadata.create_all(bind=engine)
+    if _IS_SQLITE:
+        _add_missing_nullable_columns(Base.metadata)
+
+
+def _add_missing_nullable_columns(metadata) -> None:
+    """Bring an existing dev/demo SQLite database up to the current models.
+
+    ``create_all`` never alters a table that already exists, so a column added
+    since the database was created (e.g. observations.chamber_temperature_c)
+    made every query fail with "no such column". Only nullable columns are
+    added; anything else still needs Alembic (the production path).
+    """
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table in metadata.sorted_tables:
+            if not inspector.has_table(table.name):
+                continue
+            present = {column["name"] for column in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name not in present and column.nullable:
+                    ddl = column.type.compile(dialect=engine.dialect)
+                    conn.exec_driver_sql(
+                        f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl}'
+                    )

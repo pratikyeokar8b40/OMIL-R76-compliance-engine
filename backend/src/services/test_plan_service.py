@@ -47,12 +47,25 @@ class TestPlanStateError(Exception):
 
 def ensure_plan(db: Session, session: TestSession, user_id: uuid.UUID) -> list[TestPlanItem]:
     existing = {r.test_type: r for r in db.scalars(select(TestPlanItem).where(TestPlanItem.session_id == session.id)).all()}
-    missing = [tt for tt in ObservationTestType if tt not in existing]
-    for tt in missing:
-        db.add(TestPlanItem(session_id=session.id, test_type=tt,
-            status=TestPlanStatus.REQUIRED if tt in CORE_REQUIRED else TestPlanStatus.OPTIONAL,
-            updated_by=user_id))
-    if missing:
+    changed = False
+    for tt in ObservationTestType:
+        if tt not in existing:
+            db.add(TestPlanItem(session_id=session.id, test_type=tt,
+                status=TestPlanStatus.REQUIRED if tt in CORE_REQUIRED else TestPlanStatus.OPTIONAL,
+                updated_by=user_id))
+            changed = True
+        else:
+            # Repair legacy/incomplete rows created before the N/A rationale
+            # guard existed. A test may be excluded only with a recorded
+            # rationale; otherwise restore the deterministic default plan.
+            row = existing[tt]
+            if row.status is TestPlanStatus.NOT_APPLICABLE and not (row.rationale or '').strip():
+                row.status = TestPlanStatus.REQUIRED if tt in CORE_REQUIRED else TestPlanStatus.OPTIONAL
+                row.rationale = None
+                row.updated_by = user_id
+                row.updated_at = datetime.now(timezone.utc)
+                changed = True
+    if changed:
         db.commit()
     return list_plan(db, session.id)
 

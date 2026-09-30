@@ -194,6 +194,72 @@ class TestGenerationAndSeal:
         finally:
             db.close()
 
+    def test_temperature_no_load_report_includes_chamber_temperature(self, tokens) -> None:
+        instrument = client.post(
+            "/api/v1/instruments",
+            headers=_auth(tokens["tech"]),
+            json={
+                "manufacturer": "Essae",
+                "model": "DS-415",
+                "serial_number": "R5-TEMP-REPORT-001",
+                "accuracy_class": "III",
+                "max_capacity": "15",
+                "min_capacity": "0.1",
+                "verification_scale_interval": "0.005",
+            },
+        )
+        assert instrument.status_code == 201, instrument.text
+
+        session = client.post(
+            "/api/v1/sessions",
+            headers=_auth(tokens["tech"]),
+            json={"instrument_id": instrument.json()["id"], "start_temp_c": "22", "humidity_pct": "48"},
+        )
+        assert session.status_code == 201, session.text
+        session_id = session.json()["id"]
+
+        r = client.post(
+            f"/api/v1/sessions/{session_id}/observations",
+            headers=_auth(tokens["tech"]),
+            json={
+                "test_type": "temperature_no_load",
+                "sequence_no": 1,
+                "applied_load": "0",
+                "indication": "0.002",
+                "additional_load": "0",
+                "chamber_temperature_c": "10.50",
+            },
+        )
+        assert r.status_code == 201, r.text
+
+        # The finalize gate needs the core tests, checklist and end temperature too.
+        make_ready(client, _auth(tokens["tech"]), session_id)
+        finalize = client.post(f"/api/v1/sessions/{session_id}/finalize", headers=_auth(tokens["tech"]))
+        assert finalize.status_code == 200, finalize.text
+
+        db = SessionLocal()
+        try:
+            data = aggregate_session(db, __import__("uuid").UUID(session_id))
+            assert data.observations["temperature_no_load"][0]["temperature_c"] == "10.50"
+            # ...and both renderers print it in place of the position column.
+            import io
+
+            from docx import Document
+            from pypdf import PdfReader
+
+            from src.report import render_docx, render_pdf
+
+            kwargs = dict(verify_base_url="http://x/verify", sha256="0" * 64, report_id="r")
+            pdf_text = "".join(
+                page.extract_text() for page in PdfReader(io.BytesIO(render_pdf(data, **kwargs))).pages
+            )
+            assert "(°C)" in pdf_text and "10.50" in pdf_text  # header wraps as "T\n(°C)"
+            doc = Document(io.BytesIO(render_docx(data, **kwargs)))
+            cells = {cell.text for table in doc.tables for row in table.rows for cell in row.cells}
+            assert {"T (°C)", "10.50"} <= cells
+        finally:
+            db.close()
+
 
 class TestVerification:
     def test_red_drift_fails_passing_observations(self, tokens) -> None:

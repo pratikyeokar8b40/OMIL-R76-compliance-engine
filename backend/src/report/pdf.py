@@ -97,13 +97,17 @@ def _kv_table(pairs: list[tuple[str, str]]) -> Table:
     return t
 
 
-def _observation_table(rows: list[dict[str, str]]) -> Table:
+def _observation_table(rows: list[dict[str, str]], test_type: str = "") -> Table:
     """R-76-2 column semantics: #, position, L, I, dL, E, Ec, MPE, ±ne, verdict.
 
     Verdict cells carry a bold word over a light fill — meaningful in
     grayscale printing with no glyph-encoding risk (Latin-1 fonts).
     """
-    header_texts = ["#", "Pos", "L", "I", f"{_DELTA}L", "E", "Ec", "MPE", "MPE in e", "Verdict"]
+    # Temperature effect on no-load rows have no position; they record the
+    # chamber temperature of each zero determination instead.
+    by_temperature = test_type == "temperature_no_load"
+    second = "temperature_c" if by_temperature else "position"
+    header_texts = ["#", "T (°C)" if by_temperature else "Pos", "L", "I", f"{_DELTA}L", "E", "Ec", "MPE", "MPE in e", "Verdict"]
     header = [Paragraph(t, _th) for t in header_texts]
     data: list[list[object]] = [header]
     fail_rows: list[int] = []
@@ -112,7 +116,7 @@ def _observation_table(rows: list[dict[str, str]]) -> Table:
             f"<b>{'PASS' if r['verdict'] == 'PASS' else 'FAIL'}</b>", _cell
         )
         data.append(
-            [r["seq"], r["position"], r["L"], r["I"], r["dL"], r["E"], r["Ec"], r["MPE"], r["MPE_e"], verdict_cell]
+            [r["seq"], r.get(second, "-"), r["L"], r["I"], r["dL"], r["E"], r["Ec"], r["MPE"], r["MPE_e"], verdict_cell]
         )
         if r["verdict"] == "FAIL":
             fail_rows.append(i)
@@ -221,7 +225,7 @@ def _body(data: ReportData) -> list[object]:
     for i, (test_type, rows) in enumerate(data.observations.items(), start=1):
         fails = sum(1 for r in rows if r["verdict"] == "FAIL")
         heading = Paragraph(f"5.{i} · {test_title(test_type)} - {len(rows)} reading(s), {fails} failed", _h2)
-        flow.append(KeepTogether([heading, _observation_table(rows)]))
+        flow.append(KeepTogether([heading, _observation_table(rows, test_type)]))
 
     if data.checklist:
         flow.append(Paragraph("5.C · Checklist (R 76-2 sheet 17)", _h2))

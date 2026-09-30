@@ -256,6 +256,9 @@ class Observation(Base):
     indication: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC)
     additional_load: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC, default=Decimal("0"))
     zero_error: Mapped[Decimal] = mapped_column(_METROLOGY_NUMERIC, default=Decimal("0"))
+    # Temperature effect on no-load (3.9.2.3 / A.5.3.2): chamber temperature
+    # at which the zero point was determined. NULL for every other test type.
+    chamber_temperature_c: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     # Discrimination only (A.4.8.2): indication I2 after the 1.4 d extra
     # load. NULL for every other test type.
     second_indication: Mapped[Decimal | None] = mapped_column(

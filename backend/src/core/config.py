@@ -10,6 +10,7 @@ import os
 import secrets
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 # Load a .env from backend/ if python-dotenv is available (optional dep).
 try:  # pragma: no cover - trivial env loading
@@ -19,8 +20,32 @@ try:  # pragma: no cover - trivial env loading
 except ImportError:  # pragma: no cover
     pass
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+def _parse_string_list(value: object) -> list[str]:
+    """Parse a string-list env var without crashing on plain-URL values.
+
+    pydantic-settings defaults to JSON decoding for complex fields, so the
+    shell-style form ``CORS_ALLOW_ORIGINS=http://localhost:8080`` (documented
+    in deploy/.env.example and used by docker-compose.yml) previously aborted
+    settings parsing and killed the app at import time. Accept both the JSON
+    list form and a comma/whitespace separated URL list.
+    """
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if text.startswith("["):
+        try:
+            import json
+
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except (ValueError, TypeError):
+            pass  # fall through to the lenient URL-list form
+    return [item.strip() for item in text.replace(",", " ").split() if item.strip()]
 
 
 _DEFAULT_JWT_SECRET = "dev-only-secret-change-me"
@@ -60,16 +85,31 @@ class Settings(BaseSettings):
     )
 
     # --- CORS ------------------------------------------------------------
-    #: Loopback dev origins by default (any port). Pin exact origins in
-    #: production via CORS_ALLOW_ORIGINS='["https://pwa.example.gov.in"]'.
-    cors_allow_origins: list[str] = Field(
-        default=[
-            f"http://{host}:{port}"
-            for port in (5173, 5174, 4173)
-            for host in ("localhost", "127.0.0.1", "[::1]")
+    #: Loopback dev origins by default (Vite dev 5173/5174, preview 4173,
+    #: Docker frontend 8080). Pin exact origins in production via
+    #: CORS_ALLOW_ORIGINS='https://pwa.example.gov.in' (single URL or
+    #: comma-separated list or JSON array are all accepted).
+    cors_allow_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://[::1]:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
+            "http://[::1]:5174",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+            "http://[::1]:4173",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
         ],
         description="Browser origins allowed to call this API.",
     )
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def _decode_cors_origins(cls, value: object) -> list[str]:
+        return _parse_string_list(value)
 
     # --- Reports (Phase 5) ------------------------------------------------
     reports_dir: str = Field(default="./reports")

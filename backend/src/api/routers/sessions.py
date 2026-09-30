@@ -178,6 +178,7 @@ def add_observation(
             indication=body.indication,
             additional_load=body.additional_load,
             zero_error=body.zero_error,
+            chamber_temperature_c=body.chamber_temperature_c,
             source=body.source,
             second_indication=body.second_indication,
         )

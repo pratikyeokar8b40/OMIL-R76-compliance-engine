@@ -24,6 +24,13 @@ from ..engine.rounding import format_stored
 #: at least 6 decimals (see ``format_stored``).
 OutDecimal = Annotated[Decimal, PlainSerializer(format_stored, return_type=str)]
 
+#: A temperature as returned by the API: two decimals, like the session's
+#: start/end temperatures ("10.50"), whatever scale the column stores.
+TemperatureOut = Annotated[
+    Decimal,
+    PlainSerializer(lambda v: f"{Decimal(v).quantize(Decimal('0.01')):f}", return_type=str),
+]
+
 #: Ambient conditions a real laboratory can have. Anything outside is a
 #: typing error (e.g. -5000 degC), not a measurement.
 TemperatureC = Annotated[StrictDecimal, Field(ge=-50, le=100)]
@@ -238,6 +245,7 @@ class ObservationCreate(BaseModel):
     indication: NonNegativeDecimal
     additional_load: NonNegativeDecimal = "0"
     zero_error: StrictDecimal = "0"
+    chamber_temperature_c: StrictDecimal | None = None
     source: Literal["manual", "serial", "ocr"] = "manual"
     # Discrimination only (A.4.8.2 / R 76-2 p.14): indication I2 after the
     # extra load of 1.4 d; must rise by >= d from `indication` (I1).
@@ -263,6 +271,8 @@ class ObservationOut(BaseModel):
     error_prior: OutDecimal
     corrected_error: OutDecimal
     mpe_limit: OutDecimal
+    #: Temperature effect on no-load (3.9.2.3): chamber temperature of the row.
+    chamber_temperature_c: TemperatureOut | None = None
     verdict: str
     entered_at: datetime
     source: str

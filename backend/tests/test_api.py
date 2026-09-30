@@ -825,6 +825,7 @@ class TestInfluenceFactorModules:
             json={
                 "test_type": "temperature_no_load",
                 "sequence_no": 60,
+                "chamber_temperature_c": "20",
                 "applied_load": "0",
                 "indication": "0.006",
                 "additional_load": "0.001",
@@ -846,6 +847,7 @@ class TestInfluenceFactorModules:
             json={
                 "test_type": "temperature_no_load",
                 "sequence_no": 61,
+                "chamber_temperature_c": "20",
                 "applied_load": "0",
                 "indication": "0",
                 "additional_load": "0.0025",
@@ -872,6 +874,83 @@ class TestInfluenceFactorModules:
         )
         assert r.status_code == 422
         assert "no-load" in r.json()["detail"]
+
+    def test_temperature_no_load_captures_and_persists_chamber_temperature(
+        self, tokens, session_id
+    ) -> None:
+        r = client.post(
+            f"/api/v1/sessions/{session_id}/observations",
+            headers=_auth(tokens["tech"]),
+            json={
+                "test_type": "temperature_no_load",
+                "sequence_no": 63,
+                "applied_load": "0",
+                "indication": "0.002",
+                "additional_load": "0",
+                "chamber_temperature_c": "10.00",
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["observation"]["chamber_temperature_c"] == "10.00"
+        assert body["observation"]["applied_load"] == "0.000000"
+
+    def test_temperature_no_load_rejects_invalid_and_out_of_range_temperature(
+        self, tokens, session_id
+    ) -> None:
+        invalid = client.post(
+            f"/api/v1/sessions/{session_id}/observations",
+            headers=_auth(tokens["tech"]),
+            json={
+                "test_type": "temperature_no_load",
+                "sequence_no": 64,
+                "applied_load": "0",
+                "indication": "0.002",
+                "chamber_temperature_c": "NaN",
+            },
+        )
+        out_of_range = client.post(
+            f"/api/v1/sessions/{session_id}/observations",
+            headers=_auth(tokens["tech"]),
+            json={
+                "test_type": "temperature_no_load",
+                "sequence_no": 65,
+                "applied_load": "0",
+                "indication": "0.002",
+                "chamber_temperature_c": "45.0",
+            },
+        )
+        assert invalid.status_code == 422
+        assert out_of_range.status_code == 422
+
+    def test_temperature_no_load_keeps_multiple_determinations_independent(
+        self, tokens, session_id
+    ) -> None:
+        for seq, temp in ((66, "10.0"), (67, "20.0")):
+            r = client.post(
+                f"/api/v1/sessions/{session_id}/observations",
+                headers=_auth(tokens["tech"]),
+                json={
+                    "test_type": "temperature_no_load",
+                    "sequence_no": seq,
+                    "applied_load": "0",
+                    "indication": "0.001",
+                    "chamber_temperature_c": temp,
+                },
+            )
+            assert r.status_code == 201, r.text
+
+        r = client.get(
+            f"/api/v1/sessions/{session_id}/observations",
+            headers=_auth(tokens["tech"]),
+        )
+        temps = {
+            row["sequence_no"]: row["chamber_temperature_c"]
+            for row in r.json()
+            if row["test_type"] == "temperature_no_load"
+        }
+        assert temps[66] == "10.00"
+        assert temps[67] == "20.00"
 
     def test_damp_heat_and_voltage_use_standard_band(
         self, tokens, session_id
