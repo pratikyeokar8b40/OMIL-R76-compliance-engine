@@ -15,7 +15,7 @@ export function ReadingModule({
   setAppliedLoad,
   source,
   setSource,
-  liveValidation,
+  preview,
   rows = [],
   onAdd,
   unit = 'g',
@@ -24,6 +24,12 @@ export function ReadingModule({
 }) {
   const [additionalLoad, setAdditionalLoad] = useState('0');
   const [zeroError, setZeroError] = useState('0');
+  const load = String(fixedAppliedLoad ?? appliedLoad ?? '');
+  // Preview with the ΔL / E0 typed here, not just L and I.
+  const liveValidation =
+    preview && value && !Number.isNaN(Number(value)) && load.trim()
+      ? preview({ appliedLoad: load, indication: String(value), additionalLoad, zeroError })
+      : null;
   // ΔL (changeover extra load) is part of E = I + e/2 - ΔL - L; hiding it
   // left every reading carrying a +e/2 bias, so it is visible by default.
   const [showAdvanced, setShowAdvanced] = useState(true);
@@ -142,7 +148,7 @@ export function ReadingModule({
   const handleCapture = async () => {
     if (!value || Number.isNaN(Number(value))) return;
     const saved = await onAdd({
-      applied_load: String(fixedAppliedLoad ?? appliedLoad ?? ''),
+      applied_load: load,
       indication: String(value),
       additional_load: String(additionalLoad || '0'),
       zero_error: String(zeroError || '0'),

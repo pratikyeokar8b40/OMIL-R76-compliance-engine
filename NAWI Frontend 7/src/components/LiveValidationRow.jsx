@@ -2,6 +2,13 @@ import React from 'react';
 
 export function LiveValidationRow({ evaluation, unit = 'g' }) {
   if (!evaluation) return null;
+  if (evaluation.invalid) {
+    return (
+      <div className="mt-5 rounded-md border border-[#e3cf9c] bg-[#fbf4e4] px-3 py-2.5 text-[11px] text-[#92713a]" role="status">
+        {evaluation.message}
+      </div>
+    );
+  }
   const isPass = evaluation.verdict === 'PASS';
 
   return (

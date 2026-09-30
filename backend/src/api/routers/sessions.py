@@ -108,6 +108,7 @@ def patch_session(
         session = session_service.update_environment(
             db,
             session,
+            start_temp_c=body.start_temp_c,
             end_temp_c=body.end_temp_c,
             humidity_pct=body.humidity_pct,
             pressure_hpa=body.pressure_hpa,
@@ -117,8 +118,10 @@ def patch_session(
     audit(
         db, request, user, AuditAction.UPDATE, "session.patch_env",
         object_ref=f"TestSession:{session.id}",
-        detail={"end_temp_c": str(body.end_temp_c) if body.end_temp_c is not None else None,
-            "humidity_pct": str(body.humidity_pct) if body.humidity_pct is not None else None},
+        detail={
+            field: str(value)
+            for field, value in body.model_dump(exclude_none=True).items()
+        },
     )
     return SessionOut.model_validate(session)
 

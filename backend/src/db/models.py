@@ -23,6 +23,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     Uuid,
 )
@@ -35,6 +36,25 @@ from ..engine import EvaluationMode
 #: instruments in kg have e = 0.000001, so half-e and dL steps need 7+ places;
 #: the previous NUMERIC(18, 6) silently rounded them (e.g. MPE 0.5e -> 1e).
 _METROLOGY_NUMERIC = Numeric(28, 10)
+
+
+class UTCDateTime(TypeDecorator):
+    """``DateTime(timezone=True)`` that always reads back timezone-aware UTC.
+
+    Values are written in UTC, but SQLite drops the offset on round-trip, so
+    the API served "2026-09-28T04:16:12" and browsers showed that UTC time as
+    local time (5 h 30 min early in India). PostgreSQL already returns aware
+    values; this only fills in UTC where the driver lost it. The DDL is plain
+    ``DateTime(timezone=True)``, so migrations are unaffected.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_result_value(self, value: datetime | None, dialect: object) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 def _utcnow() -> datetime:
@@ -135,7 +155,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, native_enum=False, length=32))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
     sessions: Mapped[list[TestSession]] = relationship(back_populates="creator")
     instruments: Mapped[list[Instrument]] = relationship(back_populates="creator")
@@ -160,7 +180,7 @@ class Instrument(Base):
     base_unit: Mapped[str] = mapped_column(String(8), default="kg")
     n_max: Mapped[Decimal] = mapped_column(Numeric(24, 6))  # Max / e, computed once
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
     creator: Mapped[User] = relationship(back_populates="instruments")
     sessions: Mapped[list[TestSession]] = relationship(back_populates="instrument")
@@ -170,6 +190,7 @@ class TestSession(Base):
     """One evaluation campaign against one instrument."""
 
     __tablename__ = "test_sessions"
+    __test__ = False  # not a pytest test class despite the name
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_new_uuid)
     instrument_id: Mapped[uuid.UUID] = mapped_column(
@@ -190,10 +211,10 @@ class TestSession(Base):
     end_temp_c: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
     humidity_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
     pressure_hpa: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
     instrument: Mapped[Instrument] = relationship(back_populates="sessions")
     creator: Mapped[User] = relationship(back_populates="sessions")
@@ -249,7 +270,7 @@ class Observation(Base):
         Enum(ObservationVerdict, native_enum=False, length=8)
     )
 
-    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    entered_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     entered_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     source: Mapped[ObservationSource] = mapped_column(
         Enum(ObservationSource, native_enum=False, length=16),
@@ -271,7 +292,7 @@ class TestPlanItem(Base):
     status: Mapped[TestPlanStatus] = mapped_column(Enum(TestPlanStatus, native_enum=False, length=24))
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
     session: Mapped[TestSession] = relationship(back_populates="test_plan")
 
@@ -292,9 +313,9 @@ class Report(Base):
     signed_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id"), nullable=True
     )
-    signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    signed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     template_version: Mapped[str] = mapped_column(String(32), default="r76-2-v1")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
     session: Mapped[TestSession] = relationship(back_populates="reports")
 
@@ -352,5 +373,5 @@ class ChecklistItem(Base):
     )
     entered_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     entered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow
+        UTCDateTime(), default=_utcnow
     )

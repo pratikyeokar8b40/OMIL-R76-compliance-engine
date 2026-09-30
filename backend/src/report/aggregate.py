@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -211,8 +211,12 @@ def aggregate_session(db: OrmSession, session_id: uuid.UUID) -> ReportData:
         "pass_count": verdict_counts["PASS"],
         "fail_count": verdict_counts["FAIL"],
         "total": verdict_counts["PASS"] + verdict_counts["FAIL"],
+        # Decimal all the way (rules.md INV-4), rounded half-up like every
+        # other reported quantity.
         "worst_utilization": (
-            f"{float(worst_ratio):.1%}" if worst_ratio is not None else "—"
+            f"{(worst_ratio * 100).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP):f}%"
+            if worst_ratio is not None
+            else "—"
         ),
         "ruleset_version": RULESET_VERSION,
         "clause": (

@@ -29,6 +29,8 @@ const WORKFLOW_SCREENS = [
 ];
 
 const isLocalId = (id) => !id || String(id).startsWith('local-');
+const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== '';
+const FINAL_STATES = ['completed', 'approved'];
 
 export function ActiveSession() {
   const [, setLocation] = useLocation();
@@ -90,15 +92,50 @@ export function ActiveSession() {
     try { return JSON.parse(localStorage.getItem('nawi-user') || '{}'); } catch { return {}; }
   })();
   const canEdit = currentUser.role !== 'approving_officer';
+  const isFinal = FINAL_STATES.includes(session.status);
+
+  // Provisional preview for a reading of `testType` (server verdict is final).
+  const previewFor = (testType, fields) =>
+    evaluateObservation({
+      verificationScaleInterval: session.verificationScaleInterval || 1,
+      displayInterval: session.displayInterval || null,
+      maxCapacity: session.capacity || null,
+      accuracyClass: session.accuracyClass || 'III',
+      evaluationMode: session.evaluation_mode,
+      testType,
+      ...fields,
+    });
+
+  // Keep the server's view of status and conditions: another tab, the
+  // officer, or a finalize elsewhere may have changed them.
+  const mergeServerSession = (serverRow) => {
+    if (!serverRow) return;
+    setSession((prev) => {
+      if (prev.id !== serverRow.id) return prev;
+      const next = {
+        ...prev,
+        status: serverRow.status,
+        start_temp_c: serverRow.start_temp_c,
+        end_temp_c: serverRow.end_temp_c,
+        humidity_pct: serverRow.humidity_pct,
+        pressure_hpa: serverRow.pressure_hpa,
+      };
+      localStorage.setItem('nawi-session', JSON.stringify(next));
+      void saveWorkingSession(next);
+      return next;
+    });
+  };
 
   const hydrateServerState = async (serverSession) => {
     if (!serverSession?.id || isLocalId(serverSession.id)) return;
-    const [rows, drift, plan, checklist] = await Promise.allSettled([
+    const [rows, drift, plan, checklist, serverRow] = await Promise.allSettled([
       api.observations(serverSession.id),
       api.drift(serverSession.id),
       api.testPlan(serverSession.id),
       api.checklist(serverSession.id),
+      api.session(serverSession.id),
     ]);
+    if (serverRow.status === 'fulfilled') mergeServerSession(serverRow.value);
     if (rows.status === 'fulfilled') setObservations(rows.value || []);
     if (drift.status === 'fulfilled') setDriftInfo(normalizeDrift(drift.value));
     if (plan.status === 'fulfilled') setTestPlanData(plan.value?.items || plan.value || []);
@@ -197,19 +234,10 @@ export function ActiveSession() {
     persist({ creepTimer: next });
   };
 
-  const evaluateReading = () => {
-    if (!reading.trim()) return null;
-    if (!String(appliedLoad).trim()) return null;
-    return evaluateObservation({
-      appliedLoad: String(appliedLoad),
-      indication: String(reading),
-      verificationScaleInterval: session.verificationScaleInterval || 1,
-      accuracyClass: session.accuracyClass || 'III',
-      evaluationMode: session.evaluation_mode,
-    });
-  };
-
-  const liveValidation = reading.trim() && !Number.isNaN(Number(reading)) ? evaluateReading() : null;
+  const liveValidation =
+    reading.trim() && !Number.isNaN(Number(reading)) && String(appliedLoad).trim()
+      ? previewFor(current?.testType, { appliedLoad: String(appliedLoad), indication: String(reading) })
+      : null;
 
   const rowsFor = (testType) => observations.filter((o) => o.test_type === testType);
 
@@ -218,6 +246,10 @@ export function ActiveSession() {
     // Modules pass either camelCase overrides or the API's snake_case names
     // (ReadingModule sends additional_load / zero_error); accept both so a
     // typed ΔL or E0 is never silently replaced by 0.
+    if (isFinal) {
+      setApiError('This evaluation is finalized; its readings are sealed in the report.');
+      return false;
+    }
     const applied = String(extraParams.appliedLoadOverride ?? extraParams.applied_load ?? appliedLoad ?? '');
     const ind = String(extraParams.indicationOverride ?? extraParams.indication ?? reading ?? '');
     const additional = extraParams.additionalLoad ?? extraParams.additional_load ?? '0';
@@ -234,7 +266,6 @@ export function ActiveSession() {
     const sequenceNo =
       matching.length > 0 ? Math.max(...matching.map((o) => Number(o.sequence_no ?? -1))) + 1 : 0;
 
-    const provisional = evaluateReading();
     const payload = {
       test_type: testType,
       position: position || null,
@@ -253,6 +284,17 @@ export function ActiveSession() {
     ) {
       payload.second_indication = String(extraParams.secondIndication);
     }
+
+    // Offline rows show this until the server re-evaluates them on sync; it
+    // is computed from the values actually submitted, not the shared inputs.
+    const preview = previewFor(testType, {
+      appliedLoad: payload.applied_load,
+      indication: payload.indication,
+      additionalLoad: payload.additional_load,
+      zeroError: payload.zero_error,
+      secondIndication: payload.second_indication ?? null,
+    });
+    const provisional = preview && !preview.invalid ? preview : null;
 
     let row = {
       test_type: testType,
@@ -319,15 +361,31 @@ export function ActiveSession() {
   const saveEnvironment = async () => {
     setEnvSaving(true);
     setEnvSaveState('');
-    // Notice: start_temp_c is NEVER sent in PATCH
+    const text = (v) => (hasValue(v) ? String(v).trim() : null);
+    // The start temperature is the drift baseline: sent only when the session
+    // has none yet (the server refuses to change a recorded one).
     const payload = {
-      end_temp_c: envValues.end_temp_c.trim() ? envValues.end_temp_c.trim() : null,
-      humidity_pct: envValues.humidity_pct.trim() ? envValues.humidity_pct.trim() : null,
-      pressure_hpa: envValues.pressure_hpa.trim() ? envValues.pressure_hpa.trim() : null,
+      ...(hasValue(session.start_temp_c) ? {} : { start_temp_c: text(envValues.start_temp_c) }),
+      end_temp_c: text(envValues.end_temp_c),
+      humidity_pct: text(envValues.humidity_pct),
+      pressure_hpa: text(envValues.pressure_hpa),
     };
+    const recordLocally = (fields) => {
+      const next = { ...session, envValues, ...fields };
+      localStorage.setItem('nawi-session', JSON.stringify(next));
+      void saveWorkingSession(next);
+      setSession(next);
+    };
+    const queuedFields = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== null));
     try {
       if (session.id && !isLocalId(session.id)) {
-        await api.patchSession(session.id, payload);
+        const updated = await api.patchSession(session.id, payload);
+        recordLocally({
+          start_temp_c: updated.start_temp_c,
+          end_temp_c: updated.end_temp_c,
+          humidity_pct: updated.humidity_pct,
+          pressure_hpa: updated.pressure_hpa,
+        });
         setEnvSaveState('saved');
         setDriftLoading(true);
         try {
@@ -339,18 +397,28 @@ export function ActiveSession() {
         }
       } else if (session.id) {
         await queueOutbox({ kind: 'environment', sessionId: session.id, payload });
+        recordLocally(queuedFields);
         setEnvSaveState('queued');
       }
-    } catch {
+      setApiError('');
+    } catch (err) {
+      if (err.status && err.status < 500) {
+        // The server answered and refused (e.g. out-of-range value): show why.
+        setApiError(`Environment not saved: ${err.message}`);
+        setEnvSaveState('error');
+        recordLocally({});
+        return;
+      }
       try {
         await queueOutbox({ kind: 'environment', sessionId: session.id, payload });
+        recordLocally(queuedFields);
         setEnvSaveState('queued');
       } catch {
         setEnvSaveState('error');
+        recordLocally({});
       }
     } finally {
       setEnvSaving(false);
-      persist({ envValues });
     }
   };
 
@@ -453,6 +521,15 @@ export function ActiveSession() {
     }
   };
 
+  const openReport = async () => {
+    try {
+      const report = (await api.reports()).find((r) => r.session_id === session.id);
+      setLocation(report?.id ? `/reports/${report.id}` : '/reports');
+    } catch {
+      setLocation('/reports');
+    }
+  };
+
   const handleFinalize = async () => {
     if (!canEdit) {
       setFinalizeError('Approving officers may review reports but cannot finalize evaluations.');
@@ -465,20 +542,10 @@ export function ActiveSession() {
     setFinalizing(true);
     setFinalizeError('');
     try {
-      await api.finalize(session.id);
+      mergeServerSession(await api.finalize(session.id));
       setFinalized(true);
       // Retrieve generated report and navigate to view
-      try {
-        const reports = await api.reports();
-        const report = reports.find((r) => r.session_id === session.id);
-        if (report?.id) {
-          setLocation(`/reports/${report.id}`);
-          return;
-        }
-      } catch {
-        // fallback
-      }
-      setLocation('/reports');
+      await openReport();
     } catch (err) {
       setFinalizeError(err.message || 'Finalization was rejected by the evaluation service.');
     } finally {
@@ -499,7 +566,10 @@ export function ActiveSession() {
   const screenComplete = (screen) => {
     if (!screen) return false;
     if (screen.kind === 'identification') return Boolean(session.instrument_id || session.instrumentId || session.model);
-    if (screen.kind === 'environment') return Boolean(session.start_temp_c ?? envValues.start_temp_c) && Boolean(session.end_temp_c ?? envValues.end_temp_c);
+    // Only the start temperature gates the tests: the end temperature is taken
+    // when the tests are done, and the Verdict screen (and the server's
+    // finalize gate) require it then. A typed-but-unsaved value does not count.
+    if (screen.kind === 'environment') return hasValue(session.start_temp_c);
     if (screen.kind === 'test_plan') return testPlanData.length > 0;
     if (screen.kind === 'checklist') {
       const progress = checklistData.progress || {};
@@ -537,6 +607,9 @@ export function ActiveSession() {
           saveState={envSaveState}
           driftInfo={driftInfo}
           driftLoading={driftLoading}
+          startValues={session}
+          needsStartTemp={!hasValue(session.start_temp_c)}
+          readOnly={isFinal || !canEdit}
         />
       );
     }
@@ -580,6 +653,7 @@ export function ActiveSession() {
           finalizing={finalizing}
           finalizeError={finalizeError}
           canFinalize={canEdit}
+          onEditEnvironment={() => setScreenIndex(screens.findIndex((s) => s.kind === 'environment'))}
         />
       );
     }
@@ -641,6 +715,7 @@ export function ActiveSession() {
               zeroError: params.zero_error,
             })
           }
+          preview={(fields) => previewFor('discrimination', fields)}
           unit={session.unit || 'g'}
           source={source}
           setSource={setSource}
@@ -657,9 +732,11 @@ export function ActiveSession() {
             addReading('temperature_no_load', null, {
               appliedLoadOverride: '0',
               indicationOverride: params.indication,
+              additionalLoad: params.additional_load,
               zeroError: params.zero_error,
             })
           }
+          preview={(fields) => previewFor('temperature_no_load', fields)}
           unit={session.unit || 'g'}
           source={source}
           setSource={setSource}
@@ -681,6 +758,7 @@ export function ActiveSession() {
             zeroError: params.zero_error,
             customSource: params.source,
           })}
+          preview={(fields) => previewFor(current.testType, fields)}
           unit={session.unit || 'g'}
           source={source}
           setSource={setSource}
@@ -698,8 +776,7 @@ export function ActiveSession() {
         setAppliedLoad={setAppliedLoad}
         source={source}
         setSource={setSource}
-        liveValidation={liveValidation}
-        readings={rowsFor(module?.testType || current.testType).map((r) => r.indication)}
+        preview={(fields) => previewFor(module?.testType || current.testType, fields)}
         rows={rowsFor(module?.testType || current.testType)}
         onAdd={(extra) => addReading(module?.testType || current.testType, null, extra)}
         unit={session.unit || 'g'}
@@ -748,6 +825,17 @@ export function ActiveSession() {
           </Button>
         </div>
       </div>
+
+      {isFinal && (
+        <div className="panel mb-6 flex flex-wrap items-center justify-between gap-3 border-[#9bc8bb] bg-[#eaf4ef] p-4 text-xs text-[#2e7568]" data-testid="text-session-sealed">
+          <span>
+            This evaluation is {session.status === 'approved' ? 'approved' : 'finalized'}: its readings and conditions are sealed in the report.
+          </span>
+          <Button size="sm" variant="quiet" onClick={() => void openReport()} data-testid="button-open-sealed-report">
+            <FileText size={14} /> View report
+          </Button>
+        </div>
+      )}
 
       {apiError && (
         <div className="panel mb-6 border-[#e7b5ae] bg-[#fff5f3] p-4 text-xs text-[#a6423b]">{apiError}</div>

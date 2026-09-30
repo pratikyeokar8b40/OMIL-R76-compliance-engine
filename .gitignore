@@ -229,3 +229,7 @@ docs/*.pdf
 
 # deploy secrets
 deploy/.env
+
+# Node dependencies anywhere in the tree (a stray frontend/node_modules was
+# committed once the old frontend/.gitignore went away with that folder).
+node_modules/

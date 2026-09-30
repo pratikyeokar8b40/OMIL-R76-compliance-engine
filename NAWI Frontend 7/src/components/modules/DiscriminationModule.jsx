@@ -1,53 +1,58 @@
 import React, { useState } from 'react';
-import { Plus, CheckCircle2, XCircle, ArrowRight, Activity, HelpCircle } from 'lucide-react';
+import Decimal from 'decimal.js';
+import { Plus } from 'lucide-react';
 import LiveValidationRow from '@/components/LiveValidationRow';
 
 export function DiscriminationModule({
   session = {},
   rows = [],
   onAdd,
+  preview,
   unit = 'g',
   source = 'manual',
   setSource,
 }) {
-  const [appliedLoad, setAppliedLoad] = useState('500');
+  // R 76-2 records discrimination at Min, ½ Max and Max; start at Min
+  // (a fixed "500" was above Max for kg instruments).
+  const [appliedLoad, setAppliedLoad] = useState(() => String(session.minCapacity || session.min_capacity || ''));
   const [indication1, setIndication1] = useState('');
-  const [additionalLoad, setAdditionalLoad] = useState('0.1');
-  const [indication2, setIndication2] = useState('');
-
   const d = session.displayInterval || session.display_interval || session.verificationScaleInterval || '1';
-
-  // Client preview calculation; final result comes from the evaluation service
-  const computeProvisional = () => {
-    if (!indication1 || !indication2 || Number.isNaN(Number(indication1)) || Number.isNaN(Number(indication2))) {
-      return null;
+  // Break-out load of 1/10 d (a fixed "0.1" exceeded e on kg instruments).
+  const [additionalLoad, setAdditionalLoad] = useState(() => {
+    try {
+      return new Decimal(d).div(10).toFixed();
+    } catch {
+      return '0';
     }
-    const delta = Number(indication2) - Number(indication1);
-    const dNum = Number(d);
-    const passed = delta >= dNum;
-    return {
-      delta: delta.toFixed(3),
-      required: dNum.toFixed(3),
-      passed,
-      verdict: passed ? 'PASS' : 'FAIL',
-    };
-  };
+  });
+  const [indication2, setIndication2] = useState('');
+  const numeric = (v) => v !== '' && !Number.isNaN(Number(v));
 
-  const provisional = computeProvisional();
+  // Client preview (decimal-exact, same rules as the server); the server verdict is final.
+  const provisional =
+    preview && numeric(indication1) && numeric(indication2) && numeric(appliedLoad)
+      ? preview({
+          appliedLoad: String(appliedLoad),
+          indication: String(indication1),
+          additionalLoad: String(additionalLoad || '0'),
+          secondIndication: String(indication2),
+        })
+      : null;
 
-  const handleCapture = () => {
-    if (!indication1 || !indication2 || Number.isNaN(Number(indication1)) || Number.isNaN(Number(indication2))) {
-      return;
-    }
-    onAdd({
+  const handleCapture = async () => {
+    if (!numeric(indication1) || !numeric(indication2)) return;
+    const saved = await onAdd({
       applied_load: String(appliedLoad || '0'),
       indication: String(indication1),
       additional_load: String(additionalLoad || '0'),
       second_indication: String(indication2),
       zero_error: '0',
     });
-    setIndication1('');
-    setIndication2('');
+    // Keep the values when the server refused them, so they can be corrected.
+    if (saved !== false) {
+      setIndication1('');
+      setIndication2('');
+    }
   };
 
   return (
@@ -75,7 +80,6 @@ export function DiscriminationModule({
                 inputMode="decimal"
                 value={appliedLoad}
                 onChange={(e) => setAppliedLoad(e.target.value)}
-                placeholder="500"
                 className="measure-input w-full font-mono text-sm"
                 data-testid="input-discrimination-applied-load"
               />
@@ -92,7 +96,6 @@ export function DiscriminationModule({
                 inputMode="decimal"
                 value={additionalLoad}
                 onChange={(e) => setAdditionalLoad(e.target.value)}
-                placeholder="0.1"
                 className="measure-input w-full font-mono text-sm"
                 data-testid="input-discrimination-additional-load"
               />
@@ -109,7 +112,6 @@ export function DiscriminationModule({
                 inputMode="decimal"
                 value={indication1}
                 onChange={(e) => setIndication1(e.target.value)}
-                placeholder="500.0"
                 className="measure-input w-full font-mono text-sm"
                 data-testid="input-discrimination-indication-1"
               />
@@ -126,7 +128,6 @@ export function DiscriminationModule({
                 inputMode="decimal"
                 value={indication2}
                 onChange={(e) => setIndication2(e.target.value)}
-                placeholder="501.0"
                 className="measure-input w-full font-mono text-sm"
                 data-testid="input-discrimination-indication-2"
               />
@@ -135,18 +136,19 @@ export function DiscriminationModule({
           </label>
         </div>
 
-        {provisional && (
+        {provisional?.invalid && <LiveValidationRow evaluation={provisional} unit={unit} />}
+        {provisional && !provisional.invalid && (
           <div
             className={`mt-4 flex items-center justify-between rounded-md p-3 text-xs font-mono font-bold ${
-              provisional.passed
+              provisional.verdict === 'PASS'
                 ? 'bg-[#eaf4ef] text-[#2e7568] border border-[#9bc8bb]'
                 : 'bg-[#fdeceb] text-[#b24b43] border border-[#e7b5ae]'
             }`}
           >
             <span>
-              Delta: I₂ - I₁ = {provisional.delta} {unit} (Threshold: ≥ {provisional.required} {unit})
+              Delta: I₂ - I₁ = {provisional.correctedError} {unit} (Threshold: ≥ {provisional.mpeLimit} {unit})
             </span>
-            <span>Verdict: {provisional.verdict}</span>
+            <span>Preview: {provisional.verdict}</span>
           </div>
         )}
 

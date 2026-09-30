@@ -154,8 +154,14 @@ class SessionCreate(BaseModel):
 
 
 class SessionPatch(BaseModel):
-    """PATCH /sessions/{id} body — environment only."""
+    """PATCH /sessions/{id} body — environment only.
 
+    ``start_temp_c`` is accepted only while the session has none recorded
+    (a session opened without it could otherwise never finalize); an
+    already-recorded start temperature can never be changed.
+    """
+
+    start_temp_c: TemperatureC | None = None
     end_temp_c: TemperatureC | None = None
     humidity_pct: HumidityPct | None = None
     pressure_hpa: PressureHpa | None = None

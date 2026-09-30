@@ -97,6 +97,7 @@ def update_environment(
     db: Session,
     session: TestSession,
     *,
+    start_temp_c: Decimal | None = None,
     end_temp_c: Decimal | None = None,
     humidity_pct: Decimal | None = None,
     pressure_hpa: Decimal | None = None,
@@ -105,12 +106,23 @@ def update_environment(
 
     Only open sessions accept changes: once finalized, the conditions are
     part of the sealed report and editing them would silently change it.
+    The start temperature is the drift baseline, so it can be recorded once
+    (for a session opened without it) but never rewritten; resending the
+    same value is a no-op so a replayed offline update does not fail.
     """
     if session.status not in (SessionStatus.DRAFT, SessionStatus.IN_PROGRESS):
         raise SessionStateError(
             f"session is {session.status.value}; environmental conditions are "
             "sealed with the report and can no longer change"
         )
+    if start_temp_c is not None:
+        if session.start_temp_c is None:
+            session.start_temp_c = start_temp_c
+        elif Decimal(session.start_temp_c) != start_temp_c:
+            raise SessionStateError(
+                f"the start temperature is already recorded ({session.start_temp_c} degC) "
+                "and is the drift baseline; it cannot be changed"
+            )
     if end_temp_c is not None:
         session.end_temp_c = end_temp_c
     if humidity_pct is not None:
@@ -508,9 +520,22 @@ def finalize_session(db: Session, session: TestSession) -> TestSession:
 def mark_approved(
     db: Session, session: TestSession, *, commit: bool = True
 ) -> TestSession:
-    """Officer sign-off transition."""
+    """Officer sign-off transition.
+
+    Compare-and-set like ``finalize_session``: of two concurrent sign-offs,
+    exactly one moves the row; the other waits for the write lock, matches
+    nothing and gets a 409 instead of signing a second time.
+    """
     if session.status != SessionStatus.COMPLETED:
         raise SessionStateError("only completed sessions can be approved")
+    moved = db.execute(
+        update(TestSession)
+        .where(TestSession.id == session.id, TestSession.status == SessionStatus.COMPLETED)
+        .values(status=SessionStatus.APPROVED)
+    ).rowcount
+    if moved != 1:
+        db.rollback()
+        raise SessionStateError("session was already approved")
     session.status = SessionStatus.APPROVED
     if commit:
         db.commit()
