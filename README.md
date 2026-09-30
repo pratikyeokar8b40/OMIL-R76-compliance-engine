@@ -103,6 +103,15 @@ If port 8000 is used by something else, run the backend on another port and poin
 
 **Docker (production-style):** see [`deploy/README.md`](deploy/README.md) — Postgres + backend + nginx-served frontend.
 
+### Hosted (Vercel)
+
+Live at **https://nawi-compliance-suite.vercel.app** (Vercel project `thechosenones1/nawi-compliance-suite`). One project with two [Vercel Services](https://vercel.com/docs/services) defined in [`vercel.json`](vercel.json): the FastAPI backend (`backend/`, entrypoint `src.api.main:app`) serves `/api/*` and `/health`; the Vite frontend (`frontend/`) serves everything else. Data lives in Neon Postgres (connected from the project's Storage tab as `DATABASE_URL`); sealed PDF/DOCX reports and evidence photos are stored in the database because Vercel functions have no persistent disk.
+
+- Deploy: `npx vercel deploy --prod` from the repo root (the CLI respects [`.vercelignore`](.vercelignore)).
+- Schema changes: run `python -m alembic upgrade head` in `backend/` with `DATABASE_URL` set to the Neon *unpooled* URL (`vercel env pull` gives both).
+- Production env vars: `DATABASE_URL` (Neon), `JWT_SECRET_KEY`, `ENVIRONMENT=production`, `REPORT_VERIFY_BASE_URL=https://nawi-compliance-suite.vercel.app/verify`, `REPORTS_DIR=/tmp/reports`, `UPLOADS_DIR=/tmp/uploads`, `MAX_UPLOAD_BYTES=4194304` (Vercel's request limit is 4.5 MB).
+- The hosted demo accounts use a private password (seeded with `NAWI_DEMO_PASSWORD`), not the one above; ask the team.
+
 ---
 
 ## 📂 Project Structure
@@ -154,5 +163,5 @@ OMIL-R76-compliance-engine/
 ## 🔗 Links
 
 - **Demo Video:** [link]
-- **Live Demo / Deployed App:** [link]
+- **Live Demo / Deployed App:** https://nawi-compliance-suite.vercel.app
 - **Problem Statement Reference:** PS 26035 — Smart India Hackathon 2026

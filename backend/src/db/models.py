@@ -28,7 +28,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from ..engine import EvaluationMode
 
@@ -316,8 +316,8 @@ class Report(Base):
     #: have no persistent disk, so the bytes live in the database; file_path /
     #: docx_path are only a local copy (and the source for reports created
     #: before these columns existed). Deferred: listing reports never loads them.
-    pdf_bytes: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
-    docx_bytes: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
+    pdf_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
+    docx_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
     sha256: Mapped[str] = mapped_column(String(64))
     qr_payload: Mapped[str] = mapped_column(Text)
     signed_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -345,7 +345,7 @@ class Attachment(Base):
     stored_as: Mapped[str] = mapped_column(String(80))
     content_type: Mapped[str] = mapped_column(String(64))
     size_bytes: Mapped[int] = mapped_column(Integer)
-    data: Mapped[bytes] = deferred(mapped_column(LargeBinary))
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
     uploaded_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 

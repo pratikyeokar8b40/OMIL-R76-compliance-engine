@@ -154,6 +154,7 @@ cd frontend && npx vitest run                       # 16 mirror conformance test
 | 2026-09-30 | D-47 | Frontend lives in `frontend/` (was "NAWI Frontend 7/"); tracked frontend/node_modules removed, node_modules/ ignored repo-wide | Moved upstream; 2954 stray files were committed |
 | 2026-09-30 | D-48 | API timestamps are timezone-aware UTC (UTCDateTime type decorator); start temperature can be recorded once via PATCH when missing (a recorded one is immutable); sign-off is a compare-and-set; alembic merge revision c4d8e2f6a1b7 joins the two heads; dev SQLite DBs gain new nullable columns on create_all | Browsers showed UTC as local time; sessions without a start temperature could never finalize; `alembic upgrade head` failed on two heads; existing dev DBs lacked chamber_temperature_c |
 | 2026-09-30 | D-49 | Workspace: end temperature is recorded at the end (Verdict screen links back to Environment); only the start temperature gates the tests. Live preview mirrors the server rules per test type incl. ΔL/E0 and is checked against golden_vectors.json by `npm test` (node:test, no new dependency) | End temperature was demanded before any test; the preview ignored ΔL and fixed-limit tests |
+| 2026-09-30 | D-50 | Hosted on Vercel as one project with Services (backend FastAPI `src.api.main:app` at /api + /health, frontend Vite elsewhere; region sin1) and Neon Postgres (Singapore) as `DATABASE_URL`. Report PDF/DOCX bytes and evidence attachments are stored in the database (migration d5e9f3a7b2c8; files are a best-effort local copy, older reports still read from files). `src/api/__init__.py` no longer re-exports `app` (circular import when Vercel loads main.py by path). Login rate limit keys on X-Forwarded-For when `VERCEL` is set. Service worker is network-first for page loads. Public demo accounts use a private password (`NAWI_DEMO_PASSWORD`) | Vercel functions have no persistent disk; the documented demo password is in the repo; stale cached index.html broke the page after redeploys |
 
 ## 6. Where Things Are (living map)
 
@@ -202,6 +203,7 @@ cd frontend && npx vitest run                       # 16 mirror conformance test
 | `frontend/` | React frontend (moved from "NAWI Frontend 7/", D-47); `npm test` = tests/*.test.js (D-49); `vercel.json` for static hosting | ✅ |
 | `backend/tests/test_regressions_0929.py` | Timestamps, start-temperature recovery, sign-off CAS (D-48) | ✅ 153/153 |
 | `backend/railway.json` · `railway.toml` · `.env.railway.example` | Hosted backend (Railway) config | ✅ |
+| `vercel.json` · `.vercelignore` | Vercel deployment (Services: backend + frontend), https://nawi-compliance-suite.vercel.app (D-50) | ✅ live |
 | `docs/` | Official rulebook PDFs + `comparison-vs-r76-2.md` (P5-7); PPT pending | ⬜ growing |
 
 ---
