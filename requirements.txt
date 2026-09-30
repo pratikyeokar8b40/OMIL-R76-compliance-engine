@@ -1,5 +1,6 @@
 # Project dependencies
-# This file mirrors the backend environment used by the application.
+# Mirrors backend/requirements.txt. Vercel installs the Python function
+# (api/index.py) from this file, so keep runtime packages in sync.
 
 # --- Runtime (Phase 2) -------------------------------------------------
 pydantic>=2.9,<3
@@ -12,6 +13,7 @@ pyjwt>=2.9,<3
 bcrypt>=4.2,<5
 python-multipart>=0.0.12
 python-dotenv>=1.0
+psycopg[binary]>=3.1,<4
 
 # --- Report generation (Phase 5) ---------------------------------------
 reportlab>=4.2,<6

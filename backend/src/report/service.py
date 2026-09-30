@@ -8,7 +8,8 @@ One entry point — ``generate_report`` — runs on the finalize transition:
    template version), while the ``Report.sha256`` column stores the SHA-256
    of the delivered PDF bytes. Two layers: byte-level tamper evidence plus
    meaning-level verification that survives reprints;
-4. persist the artifacts under ``settings.reports_dir`` and return the row.
+4. store the artifact bytes on the report row (plus a local copy under
+   ``settings.reports_dir`` where the disk is writable) and return the row.
 
 Regeneration policy: finalize is the only trigger and sessions transition
 ``in_progress → completed`` exactly once (atomic compare-and-set), and
@@ -66,12 +67,6 @@ def content_digest(data: ReportData) -> str:
     return sha256_hex(blob.encode("utf-8"))
 
 
-def _reports_root() -> Path:
-    root = Path(settings.reports_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
 #: Serializes report creation within the process (single-worker deployment):
 #: the existence check and the insert must not interleave.
 _GENERATE_LOCK = threading.Lock()
@@ -112,17 +107,15 @@ def generate_report(
         docx_bytes = render_docx(data, verify_base_url=verify_base_url, sha256=digest, report_id=str(report_id))
         pdf_bytes = render_pdf(data, verify_base_url=verify_base_url, sha256=digest, report_id=str(report_id))
 
-        root = _reports_root()
-        pdf_path = root / f"{session_id}.pdf"
-        docx_path = root / f"{session_id}.docx"
-        pdf_path.write_bytes(pdf_bytes)
-        docx_path.write_bytes(docx_bytes)
+        pdf_path, docx_path = _local_copy(session_id, pdf_bytes, docx_bytes)
 
         report = Report(
             id=report_id,
             session_id=session_id,
             file_path=str(pdf_path),
             docx_path=str(docx_path),
+            pdf_bytes=pdf_bytes,
+            docx_bytes=docx_bytes,
             sha256=sha256_hex(pdf_bytes),  # byte-level seal of the delivered file
             qr_payload=f"{verify_base_url.rstrip('/')}/{report_id}#{digest}",
             template_version=data.template_version,
@@ -133,13 +126,48 @@ def generate_report(
         return report
 
 
-def reverify_bytes(report: Report) -> bool:
-    """True if the stored PDF on disk still hashes to its recorded seal."""
+def _local_copy(session_id: uuid.UUID, pdf_bytes: bytes, docx_bytes: bytes) -> tuple[Path, Path]:
+    """Write a local copy of the artifacts; the database holds the originals.
+
+    Best effort: on a host without a writable disk the report is still
+    complete, because downloads and verification read the stored bytes.
+    """
+    root = Path(settings.reports_dir)
+    pdf_path = root / f"{session_id}.pdf"
+    docx_path = root / f"{session_id}.docx"
     try:
-        stored = Path(report.file_path).read_bytes()
+        root.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(pdf_bytes)
+        docx_path.write_bytes(docx_bytes)
     except OSError:
-        return False
-    return sha256_hex(stored) == report.sha256
+        pass
+    return pdf_path, docx_path
+
+
+def _read_file(path: str | None) -> bytes | None:
+    if not path:
+        return None
+    try:
+        return Path(path).read_bytes()
+    except OSError:
+        return None
+
+
+def pdf_artifact(report: Report) -> bytes | None:
+    """The sealed PDF: stored bytes, or the file of a report created before
+    artifacts were stored in the database."""
+    return report.pdf_bytes if report.pdf_bytes is not None else _read_file(report.file_path)
+
+
+def docx_artifact(report: Report) -> bytes | None:
+    """The DOCX twin, same lookup order as :func:`pdf_artifact`."""
+    return report.docx_bytes if report.docx_bytes is not None else _read_file(report.docx_path)
+
+
+def reverify_bytes(report: Report) -> bool:
+    """True if the stored PDF still hashes to its recorded seal."""
+    stored = pdf_artifact(report)
+    return stored is not None and sha256_hex(stored) == report.sha256
 
 
 def _replace_with_retry(src: Path, dst: Path, attempts: int = 20) -> None:
@@ -159,6 +187,31 @@ def _replace_with_retry(src: Path, dst: Path, attempts: int = 20) -> None:
             time.sleep(0.1)
 
 
+def _replace_local_copy(report: Report, pdf_bytes: bytes, docx_bytes: bytes) -> None:
+    """Atomically refresh the local copies; best effort like ``_local_copy``."""
+    pdf_path = Path(report.file_path)
+    docx_path = Path(report.docx_path) if report.docx_path is not None else None
+    pdf_tmp = pdf_path.with_suffix(pdf_path.suffix + ".tmp")
+    docx_tmp = docx_path.with_suffix(docx_path.suffix + ".tmp") if docx_path else None
+    try:
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_tmp.write_bytes(pdf_bytes)
+        if docx_tmp is not None:
+            docx_tmp.write_bytes(docx_bytes)
+        _replace_with_retry(pdf_tmp, pdf_path)
+        if docx_tmp is not None:
+            _replace_with_retry(docx_tmp, docx_path)
+    except OSError:
+        pass
+    finally:
+        for temporary in (pdf_tmp, docx_tmp):
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+
+
 def regenerate_artifacts(
     db: OrmSession, report: Report, *, commit: bool = True
 ) -> Report:
@@ -173,24 +226,9 @@ def regenerate_artifacts(
     base = settings.report_verify_base_url
     docx_bytes = render_docx(data, verify_base_url=base, sha256=digest, report_id=str(report.id))
     pdf_bytes = render_pdf(data, verify_base_url=base, sha256=digest, report_id=str(report.id))
-    pdf_path = Path(report.file_path)
-    docx_path = Path(report.docx_path) if report.docx_path is not None else None
-    pdf_tmp = pdf_path.with_suffix(pdf_path.suffix + ".tmp")
-    docx_tmp = docx_path.with_suffix(docx_path.suffix + ".tmp") if docx_path else None
-    try:
-        pdf_tmp.write_bytes(pdf_bytes)
-        if docx_tmp is not None:
-            docx_tmp.write_bytes(docx_bytes)
-        _replace_with_retry(pdf_tmp, pdf_path)
-        if docx_tmp is not None:
-            _replace_with_retry(docx_tmp, docx_path)
-    finally:
-        for temporary in (pdf_tmp, docx_tmp):
-            if temporary is not None:
-                try:
-                    temporary.unlink()
-                except FileNotFoundError:
-                    pass
+    _replace_local_copy(report, pdf_bytes, docx_bytes)
+    report.pdf_bytes = pdf_bytes
+    report.docx_bytes = docx_bytes
     report.sha256 = sha256_hex(pdf_bytes)
     report.qr_payload = f"{base.rstrip('/')}/{report.id}#{digest}"
     if commit:

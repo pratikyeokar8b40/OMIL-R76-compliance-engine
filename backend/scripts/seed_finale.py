@@ -19,6 +19,7 @@ duplicates. Run:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -33,7 +34,9 @@ from src.services.session_service import (
 )
 from src.services.user_service import seed_demo_users
 
-PASSWORD = "demo-password-2026"
+#: Demo account password. Local runs use the documented one; a public
+#: deployment must set NAWI_DEMO_PASSWORD, since this default is in the repo.
+PASSWORD = os.environ.get("NAWI_DEMO_PASSWORD") or "demo-password-2026"
 _DEMO_LIVE_START = Decimal("22.0")
 _DEMO_APPROVED_START = Decimal("22.5")
 
@@ -223,8 +226,9 @@ def main() -> None:
         _story_approved(db, instruments["EMS-9101-X"], tech, officer)
         _story_live(db, instruments["EMS-9101-X"], tech)
 
+        shown = "password from NAWI_DEMO_PASSWORD" if os.environ.get("NAWI_DEMO_PASSWORD") else PASSWORD
         print(f"finale dataset ready - users: tech@lab.gov.in / officer@lab.gov.in / "
-              f"admin@lab.gov.in ({PASSWORD})")
+              f"admin@lab.gov.in ({shown})")
     finally:
         db.close()
 

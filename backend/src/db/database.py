@@ -6,24 +6,44 @@ SQLite for dev/demo (zero setup); PostgreSQL in production via
 
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from ..core.config import settings
 
-_IS_SQLITE = settings.database_url.startswith("sqlite")
+
+def _sqlalchemy_url(url: str) -> str:
+    """Hosted Postgres (Neon via Vercel, Railway) hands out ``postgres://`` or
+    driver-less ``postgresql://`` URLs; this app uses the psycopg 3 driver."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
+DATABASE_URL = _sqlalchemy_url(settings.database_url)
+_IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 # SQLite needs check_same_thread=False under FastAPI's threadpool; the longer
 # timeout makes concurrent writers wait for the lock instead of failing with
 # "database is locked" (seen at ~25 concurrent users in load tests).
 _connect_args = {"check_same_thread": False, "timeout": 30} if _IS_SQLITE else {}
 
+# Serverless functions (Vercel sets VERCEL=1) are frozen between requests, so
+# pooled connections go stale; open one per request instead (Neon's pooled
+# endpoint does the pooling). Long-running servers keep the default pool.
+_serverless = {"poolclass": NullPool} if os.environ.get("VERCEL") and not _IS_SQLITE else {}
+
 engine = create_engine(
-    settings.database_url,
+    DATABASE_URL,
     connect_args=_connect_args,
+    pool_pre_ping=not _IS_SQLITE,
     future=True,
+    **_serverless,
 )
 
 if _IS_SQLITE:

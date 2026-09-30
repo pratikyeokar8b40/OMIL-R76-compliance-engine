@@ -20,6 +20,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -27,7 +28,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, relationship
 
 from ..engine import EvaluationMode
 
@@ -311,6 +312,12 @@ class Report(Base):
     )
     file_path: Mapped[str] = mapped_column(Text)
     docx_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The sealed artifacts themselves. Hosted deployments (Vercel functions)
+    #: have no persistent disk, so the bytes live in the database; file_path /
+    #: docx_path are only a local copy (and the source for reports created
+    #: before these columns existed). Deferred: listing reports never loads them.
+    pdf_bytes: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
+    docx_bytes: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
     sha256: Mapped[str] = mapped_column(String(64))
     qr_payload: Mapped[str] = mapped_column(Text)
     signed_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -321,6 +328,26 @@ class Report(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
     session: Mapped[TestSession] = relationship(back_populates="reports")
+
+
+class Attachment(Base):
+    """Evidence file (photo/PDF) attached to an open session.
+
+    Stored in the database, like report artifacts, so evidence survives on
+    hosts without a persistent disk. ``stored_as`` is the generated file name
+    shown to users; the uploader's original file name is never used.
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_new_uuid)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("test_sessions.id"), index=True)
+    stored_as: Mapped[str] = mapped_column(String(80))
+    content_type: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = deferred(mapped_column(LargeBinary))
+    uploaded_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class ChecklistOutcome(str, enum.Enum):

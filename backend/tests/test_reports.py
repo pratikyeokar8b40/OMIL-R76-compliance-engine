@@ -340,22 +340,50 @@ class TestVerification:
         assert r.status_code == 404
 
     def test_public_verify_detects_tampering(self, tokens, finalized) -> None:
+        """The sealed bytes live in the database; altering them breaks the seal."""
+        rid = __import__("uuid").UUID(finalized["report_id"])
         db = SessionLocal()
         try:
-            report = db.get(Report, __import__("uuid").UUID(finalized["report_id"]))
-            path = report.file_path
-        finally:
-            db.close()
-        original = open(path, "rb").read()
-        try:
-            with open(path, "ab") as fh:
-                fh.write(b"% tampered trailing bytes\n")
+            report = db.get(Report, rid)
+            original = report.pdf_bytes
+            assert original is not None
+            report.pdf_bytes = original + b"% tampered trailing bytes\n"
+            db.commit()
             r = client.get(f"/api/v1/public/verify/{finalized['report_id']}")
             assert r.status_code == 200
             assert r.json()["file_intact"] is False
         finally:
+            report = db.get(Report, rid)
+            report.pdf_bytes = original
+            db.commit()
+            db.close()
+        assert client.get(f"/api/v1/public/verify/{finalized['report_id']}").json()["file_intact"] is True
+
+    def test_legacy_file_only_report_still_verifies_and_detects_tampering(self, tokens, finalized) -> None:
+        """Reports created before artifacts were stored in the database are
+        read from their file (the local copy doubles as that fixture)."""
+        rid = __import__("uuid").UUID(finalized["report_id"])
+        db = SessionLocal()
+        try:
+            report = db.get(Report, rid)
+            stored, path = report.pdf_bytes, report.file_path
+            report.pdf_bytes = None
+            db.commit()
+            original = open(path, "rb").read()
+            assert original == stored
+            assert client.get(f"/api/v1/public/verify/{finalized['report_id']}").json()["file_intact"] is True
+            download = client.get(f"/api/v1/reports/{finalized['report_id']}/download", headers=_auth(tokens["tech"]))
+            assert download.status_code == 200 and download.content == original
+            with open(path, "ab") as fh:
+                fh.write(b"% tampered trailing bytes\n")
+            assert client.get(f"/api/v1/public/verify/{finalized['report_id']}").json()["file_intact"] is False
+        finally:
             with open(path, "wb") as fh:
                 fh.write(original)
+            report = db.get(Report, rid)
+            report.pdf_bytes = stored
+            db.commit()
+            db.close()
 
     def test_reverify_bytes_true_when_untouched(self, finalized) -> None:
         db = SessionLocal()

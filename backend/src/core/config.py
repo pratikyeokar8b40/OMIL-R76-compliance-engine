@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     def _decode_cors_origins(cls, value: object) -> list[str]:
         return _parse_string_list(value)
 
+    #: Use the first X-Forwarded-For hop as the client address for the login
+    #: rate limit. Only safe behind a proxy that overwrites the header; Vercel
+    #: does (and sets VERCEL=1), so it is on there and off elsewhere.
+    trust_proxy_headers: bool = Field(default_factory=lambda: bool(os.environ.get("VERCEL")))
+
     # --- Reports (Phase 5) ------------------------------------------------
     reports_dir: str = Field(default="./reports")
     #: Base URL of the public verification page the QR code points at.

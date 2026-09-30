@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy import exists, select
 
 from ..audit_helpers import audit
@@ -28,6 +27,7 @@ from ...db.models import Report, SessionStatus, TestSession, User
 from ...services.session_service import SessionStateError, mark_approved
 from ...services.report_result import overall_result
 from ...report import reverify_bytes, regenerate_artifacts
+from ...report.service import docx_artifact, pdf_artifact
 from ..schemas import ReportArchiveOut, ReportOut, SessionOut
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -98,33 +98,39 @@ def read_report(report_id: uuid.UUID, db: DbDep, _user: AnyUser) -> ReportOut:
     return ReportOut.model_validate(payload)
 
 
+def _artifact_response(data: bytes, media_type: str, filename: str) -> Response:
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{report_id}/download")
-def download_pdf(report_id: uuid.UUID, db: DbDep, _user: AnyUser) -> FileResponse:
+def download_pdf(report_id: uuid.UUID, db: DbDep, _user: AnyUser) -> Response:
     """Authoritative sealed PDF bytes."""
     report = _get_report_or_404(db, report_id)
-    path = Path(report.file_path)
-    if not path.is_file():
+    data = pdf_artifact(report)
+    if data is None:
         raise HTTPException(status.HTTP_410_GONE, "report file missing from storage")
-    return FileResponse(
-        path,
-        media_type="application/pdf",
-        filename=f"pattern-evaluation-report-{report.session_id}.pdf",
+    return _artifact_response(
+        data, "application/pdf", f"pattern-evaluation-report-{report.session_id}.pdf"
     )
 
 
 @router.get("/{report_id}/docx")
-def download_docx(report_id: uuid.UUID, db: DbDep, _user: AnyUser) -> FileResponse:
+def download_docx(report_id: uuid.UUID, db: DbDep, _user: AnyUser) -> Response:
     """Editable DOCX twin bytes."""
     report = _get_report_or_404(db, report_id)
-    if report.docx_path is None:
+    if report.docx_path is None and report.docx_bytes is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no DOCX twin for this report")
-    path = Path(report.docx_path)
-    if not path.is_file():
+    data = docx_artifact(report)
+    if data is None:
         raise HTTPException(status.HTTP_410_GONE, "DOCX file missing from storage")
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=f"pattern-evaluation-report-{report.session_id}.docx",
+    return _artifact_response(
+        data,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        f"pattern-evaluation-report-{report.session_id}.docx",
     )
 
 

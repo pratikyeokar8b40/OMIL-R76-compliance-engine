@@ -191,3 +191,64 @@ def test_worst_utilization_is_decimal_percentage(tokens) -> None:
     finally:
         db.close()
     assert data.overall["worst_utilization"] == "50.0%"
+
+
+class TestNoPersistentDisk:
+    """Hosted functions (Vercel) have no persistent, writable disk: sealed
+    artifacts and evidence must come back from the database."""
+
+    def test_report_is_complete_without_a_writable_reports_dir(self, tokens, monkeypatch, tmp_path) -> None:
+        from src.core.config import settings
+
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("x")
+        monkeypatch.setattr(settings, "reports_dir", str(blocker / "reports"))
+        h = tokens["tech"]
+        sid = _session(h, start_temp_c="22")
+        make_ready(client, h, sid)
+        assert client.post(f"/api/v1/sessions/{sid}/finalize", headers=h).status_code == 200
+        report = next(r for r in client.get("/api/v1/reports", headers=h).json() if r["session_id"] == sid)
+        pdf = client.get(f"/api/v1/reports/{report['id']}/download", headers=h)
+        docx = client.get(f"/api/v1/reports/{report['id']}/docx", headers=h)
+        assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF-")
+        assert docx.status_code == 200 and docx.content.startswith(b"PK")
+        assert client.get(f"/api/v1/public/verify/{report['id']}").json()["file_intact"] is True
+        # Officer sign-off re-seals the stored bytes too.
+        assert client.post(f"/api/v1/reports/sessions/{sid}/sign", headers=tokens["officer"]).status_code == 200
+        signed = client.get(f"/api/v1/public/verify/{report['id']}").json()
+        assert signed["signed"] is True and signed["file_intact"] is True
+
+    def test_attachments_are_stored_in_the_database(self, tokens, monkeypatch, tmp_path) -> None:
+        from src.core.config import settings
+
+        h = tokens["tech"]
+        sid = _session(h, start_temp_c="22")
+        monkeypatch.setattr(settings, "uploads_dir", str(tmp_path / "never-created"))
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+        r = client.post(
+            f"/api/v1/sessions/{sid}/attachments",
+            headers=h,
+            files={"file": ("display.png", png, "image/png")},
+        )
+        assert r.status_code == 201, r.text
+        assert not (tmp_path / "never-created").exists()
+        listed = client.get(f"/api/v1/sessions/{sid}/attachments", headers=h).json()
+        assert [a["stored_as"] for a in listed] == [r.json()["stored_as"]]
+        assert listed[0]["size_bytes"] == str(len(png))
+
+
+def test_login_rate_limit_uses_forwarded_ip_behind_trusted_proxy(monkeypatch) -> None:
+    """Behind Vercel every request arrives from the proxy's address; keying the
+    limit on it would let one attacker lock the demo account for everyone."""
+    from src.api.routers import auth
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
+    email = f"nobody-{uuid.uuid4().hex[:6]}@lab.gov.in"
+    wrong = {"email": email, "password": "wrong-password"}
+    for _ in range(auth._MAX_FAILED_LOGINS):
+        client.post("/api/v1/auth/login", json=wrong, headers={"X-Forwarded-For": "203.0.113.7"})
+    blocked = client.post("/api/v1/auth/login", json=wrong, headers={"X-Forwarded-For": "203.0.113.7"})
+    other = client.post("/api/v1/auth/login", json=wrong, headers={"X-Forwarded-For": "198.51.100.9"})
+    assert blocked.status_code == 429
+    assert other.status_code == 401  # a different visitor is not locked out

@@ -7,7 +7,8 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from ..audit_helpers import audit
+from ..audit_helpers import audit, client_ip
+from ...core.config import settings
 from ..deps import AdminOnly, AnyUser, DbDep, token_pair_response
 from ...db.audit_models import AuditAction
 from ...core.security import decode_token, TOKEN_TYPE_REFRESH
@@ -40,8 +41,10 @@ def login(body: LoginRequest, request: Request, db: DbDep) -> TokenResponse:
     from ...services.user_service import authenticate
 
     # Socket address, not X-Forwarded-For: a client could rotate that header
-    # to dodge the limit.
-    key = (request.client.host if request.client else "?", body.email.strip().lower())
+    # to dodge the limit — unless a trusted proxy (Vercel) sets it, in which
+    # case the socket address is the proxy's and would pool every visitor.
+    ip = client_ip(request) if settings.trust_proxy_headers else (request.client.host if request.client else None)
+    key = (ip or "?", body.email.strip().lower())
     now = time.monotonic()
     with _failed_lock:
         recent = _recent_failures(key, now)

@@ -237,3 +237,7 @@ node_modules/
 # Old frontend location (moved to frontend/ on 2026-09-30); a stale local copy
 # must never be re-committed.
 /NAWI Frontend 7/
+
+# Vercel CLI project link and pulled env files (contain secrets)
+.vercel
+.env*.local
