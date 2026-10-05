@@ -112,6 +112,8 @@ Live at **https://nawi-compliance-suite.vercel.app** (Vercel project `thechoseno
 - Production env vars: `DATABASE_URL` (Neon), `JWT_SECRET_KEY`, `ENVIRONMENT=production`, `REPORT_VERIFY_BASE_URL=https://nawi-compliance-suite.vercel.app/verify`, `REPORTS_DIR=/tmp/reports`, `UPLOADS_DIR=/tmp/uploads`, `MAX_UPLOAD_BYTES=4194304` (Vercel's request limit is 4.5 MB).
 - The hosted demo accounts use a private password (seeded with `NAWI_DEMO_PASSWORD`), not the one above; ask the team.
 
+**Judge access (temporary, SIH evaluation).** With `DEMO_ROLE_LOGIN=true` on the server, visitors pick a role (lab technician, approving officer, administrator) instead of typing a password, and a "Judge mode" bar lets them switch roles. The password never ships in the frontend; the server issues the session. To turn it off after judging: `npx vercel env rm DEMO_ROLE_LOGIN production` (or set it to `false`) and redeploy. To delete it entirely: `backend/src/api/routers/demo_access.py`, its `include_router` line in `main.py`, the `demo_role_login` setting, `frontend/src/components/JudgeAccess.jsx` and its line in `App.jsx`.
+
 ---
 
 ## 📂 Project Structure

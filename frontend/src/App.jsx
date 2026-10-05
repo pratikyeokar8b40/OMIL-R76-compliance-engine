@@ -21,6 +21,7 @@ import Verify from '@/pages/Verify';
 import NotFound from '@/pages/NotFound';
 import Registry from '@/pages/Registry';
 import Admin from '@/pages/Admin';
+import JudgeAccess from '@/components/JudgeAccess'; // TEMPORARY: SIH judge access
 import { syncOutbox } from '@/lib/sync';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { AUDIT_ROLES, REGISTRY_ROLES, TECHNICIAN_ROLES, hasRole } from '@/lib/roles';
@@ -155,6 +156,7 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter>
+          <JudgeAccess />
           <RoutedErrorBoundary>
             <ProtectedRouter />
           </RoutedErrorBoundary>

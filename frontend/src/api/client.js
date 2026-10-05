@@ -122,7 +122,8 @@ export function setTokens(d) {
 }
 
 export function clearTokens() {
-  [ACCESS_KEY, REFRESH_KEY, 'nawi-authenticated', 'nawi-user', 'nawi-session', 'nawi-local-mode'].forEach((k) => localStorage.removeItem(k));
+  // 'nawi-judge-mode': TEMPORARY judge access (components/JudgeAccess.jsx).
+  [ACCESS_KEY, REFRESH_KEY, 'nawi-authenticated', 'nawi-user', 'nawi-session', 'nawi-local-mode', 'nawi-judge-mode'].forEach((k) => localStorage.removeItem(k));
   // The next person signing in on this browser must not land in this
   // user's working session.
   void clearWorkingSession().catch(() => {});
@@ -133,6 +134,10 @@ export const api = {
   login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   refresh: (refreshToken) => request('/auth/refresh', { method: 'POST', body: JSON.stringify({ refresh_token: refreshToken }) }),
   me: () => request('/users/me'),
+  // TEMPORARY judge access (SIH evaluation): password-less demo roles,
+  // available only while the backend has DEMO_ROLE_LOGIN on.
+  demoAccess: () => request('/auth/demo'),
+  demoLogin: (role) => request('/auth/demo/login', { method: 'POST', body: JSON.stringify({ role }) }),
   ruleset: () => request('/ruleset'),
 
   // Instruments — returns { total, skip, limit, items }

@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from src.core.config import settings
 
 from .routers import attachments, auth, instruments, reports, sessions, checklist, test_plan, ruleset
+from .routers import demo_access  # TEMPORARY judge access (SIH); see that module to remove
 
 app = FastAPI(
     title="OIML R-76 Compliance Engine API",
@@ -50,6 +51,7 @@ async def _validation_error(_request: Request, exc: RequestValidationError) -> J
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(auth.users_router, prefix="/api/v1")
+app.include_router(demo_access.router, prefix="/api/v1")
 app.include_router(instruments.router, prefix="/api/v1")
 app.include_router(sessions.router, prefix="/api/v1")
 app.include_router(attachments.router, prefix="/api/v1")

@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     #: does (and sets VERCEL=1), so it is on there and off elsewhere.
     trust_proxy_headers: bool = Field(default_factory=lambda: bool(os.environ.get("VERCEL")))
 
+    # --- Judge access (TEMPORARY, SIH evaluation) -------------------------
+    #: Lets anyone sign in as a demo role without a password
+    #: (routers/demo_access.py). Off by default; remove after judging.
+    demo_role_login: bool = False
+
     # --- Reports (Phase 5) ------------------------------------------------
     reports_dir: str = Field(default="./reports")
     #: Base URL of the public verification page the QR code points at.
